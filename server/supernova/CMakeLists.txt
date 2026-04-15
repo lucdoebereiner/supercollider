@@ -137,7 +137,7 @@ elseif(AUDIOAPI STREQUAL bela)
     message(FATAL_ERROR "supernova is not supported on Bela")
 endif()
 
-if(NOT AUDIOAPI MATCHES "^(jack|coreaudio|portaudio)$")
+if(NOT AUDIOAPI MATCHES "^(jack|coreaudio|portaudio|pipewire)$")
     message(FATAL_ERROR "Unrecognized audio API: ${AUDIOAPI}")
 endif()
 
@@ -146,7 +146,17 @@ if(AUDIOAPI STREQUAL "coreaudio")
     message(FATAL_ERROR "supernova: coreaudio API not implemented yet, use 'default' or 'portaudio' instead")
 endif()
 
-if(AUDIOAPI STREQUAL jack)
+# Supernova doesn't have a native PipeWire backend yet; fall back to the JACK
+# path (which on PipeWire systems goes through libjack → pipewire shim). The
+# pipewire experimental backend only applies to scsynth.
+if(AUDIOAPI STREQUAL pipewire)
+    message(STATUS "supernova: AUDIOAPI=pipewire selected; supernova will use the JACK compatibility path")
+    set(_SUPERNOVA_AUDIOAPI_LOCAL jack)
+else()
+    set(_SUPERNOVA_AUDIOAPI_LOCAL ${AUDIOAPI})
+endif()
+
+if(_SUPERNOVA_AUDIOAPI_LOCAL STREQUAL jack)
     # NOTE: this is a workaround for Windows if pkgconfig is not available
     if(WIN32 AND _JACK_LINK_LIBRARIES AND _JACK_INCLUDE_DIRS)
       set(JACK_LINK_LIBRARIES ${_JACK_LINK_LIBRARIES})
@@ -163,7 +173,7 @@ if(AUDIOAPI STREQUAL jack)
 elseif(AUDIOAPI STREQUAL portaudio AND SYSTEM_PORTAUDIO)
     find_package(Portaudio REQUIRED)
 endif()
-message(STATUS "Audio API (supernova): ${AUDIOAPI}")
+message(STATUS "Audio API (supernova): ${AUDIOAPI} (effective: ${_SUPERNOVA_AUDIOAPI_LOCAL})")
 
 if(AUDIOAPI STREQUAL portaudio)
     target_sources(libsupernova PUBLIC ${CMAKE_SOURCE_DIR}/common/SC_PaUtils.cpp)

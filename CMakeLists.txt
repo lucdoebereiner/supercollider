@@ -142,7 +142,7 @@ else() # non-x86 platforms do not have SSE
     set(SSE2 OFF)
 endif()
 
-set(AUDIOAPI "default" CACHE STRING "Audio API to use (one of {default,coreaudio,jack,portaudio,bela})")
+set(AUDIOAPI "default" CACHE STRING "Audio API to use (one of {default,coreaudio,jack,portaudio,bela,pipewire})")
 
 if (AUDIOAPI STREQUAL jack)
 	# here we check for JACK metadata API
