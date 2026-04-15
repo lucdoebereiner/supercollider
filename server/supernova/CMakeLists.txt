@@ -145,6 +145,14 @@ elseif(AUDIOAPI STREQUAL bela)
     message(FATAL_ERROR "supernova is not supported on Bela")
 endif()
 
+# supernova has no native PipeWire backend; AUDIOAPI=pipewire builds it
+# against JACK (which on PipeWire systems is served by pipewire-jack).
+# Directory-scoped override only; scsynth still gets the native backend.
+if(AUDIOAPI STREQUAL pipewire)
+    message(STATUS "supernova: no native PipeWire backend, using JACK (pipewire-jack)")
+    set(AUDIOAPI jack)
+endif()
+
 if(NOT AUDIOAPI MATCHES "^(jack|coreaudio|portaudio)$")
     message(FATAL_ERROR "Unrecognized audio API: ${AUDIOAPI}")
 endif()

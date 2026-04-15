@@ -112,9 +112,9 @@ option(USE_CCACHE "Use ccache if available." ON)
 
 option(FFT_GREEN "Use internal 'Green' FFT lib rather than FFTW. (Not recommended.)" OFF)
 
-set(AUDIOAPI "default" CACHE STRING "Audio API to use (one of {default,coreaudio,jack,portaudio,bela,webaudio})")
+set(AUDIOAPI "default" CACHE STRING "Audio API to use (one of {default,coreaudio,jack,portaudio,bela,webaudio,pipewire})")
 
-if (AUDIOAPI STREQUAL jack)
+if (AUDIOAPI STREQUAL jack OR AUDIOAPI STREQUAL pipewire)
     # here we check for JACK metadata API
     include(CheckIncludeFiles)
     CHECK_INCLUDE_FILES("jack/metadata.h" JACK_USE_METADATA_API)

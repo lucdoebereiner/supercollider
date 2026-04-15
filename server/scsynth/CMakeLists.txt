@@ -31,11 +31,16 @@ if(AUDIOAPI STREQUAL "default")
     endif(APPLE)
 endif()
 
-if(NOT AUDIOAPI MATCHES "^(jack|coreaudio|portaudio|bela|webaudio)$")
+if(NOT AUDIOAPI MATCHES "^(jack|coreaudio|portaudio|bela|webaudio|pipewire)$")
     message(FATAL_ERROR "Unrecognised audio API: ${AUDIOAPI}")
 endif()
 
-if(AUDIOAPI STREQUAL jack)
+if(AUDIOAPI STREQUAL pipewire)
+    include(FindPkgConfig)
+    pkg_check_modules(PIPEWIRE REQUIRED libpipewire-0.3)
+    message(STATUS "Using PIPEWIRE_LINK_LIBRARIES: ${PIPEWIRE_LINK_LIBRARIES}")
+    message(STATUS "Using PIPEWIRE_INCLUDE_DIRS: ${PIPEWIRE_INCLUDE_DIRS}")
+elseif(AUDIOAPI STREQUAL jack)
     # NOTE: this is a workaround for Windows if pkgconfig is not available
     if(WIN32 AND _JACK_LINK_LIBRARIES AND _JACK_INCLUDE_DIRS)
         set(JACK_LINK_LIBRARIES ${_JACK_LINK_LIBRARIES})
@@ -131,7 +136,9 @@ include_directories(${CMAKE_SOURCE_DIR}/common
         .
 )
 
-if (AUDIOAPI STREQUAL jack)
+if (AUDIOAPI STREQUAL pipewire)
+    list(APPEND scsynth_sources SC_PipeWire.cpp)
+elseif (AUDIOAPI STREQUAL jack)
     list(APPEND scsynth_sources SC_Jack.cpp)
 elseif (AUDIOAPI STREQUAL portaudio)
     list(APPEND scsynth_sources SC_PortAudio.cpp ${CMAKE_SOURCE_DIR}/common/SC_PaUtils.cpp)
@@ -177,7 +184,10 @@ else()
 endif()
 
 # backend definitions
-if (AUDIOAPI STREQUAL jack)
+if (AUDIOAPI STREQUAL pipewire)
+    target_compile_definitions(libscsynth PRIVATE "SC_AUDIO_API=SC_AUDIO_API_PIPEWIRE")
+    target_include_directories(libscsynth PRIVATE ${PIPEWIRE_INCLUDE_DIRS})
+elseif (AUDIOAPI STREQUAL jack)
     target_compile_definitions(libscsynth PRIVATE "SC_AUDIO_API=SC_AUDIO_API_JACK")
     target_include_directories(libscsynth PRIVATE ${JACK_INCLUDE_DIRS})
 elseif (AUDIOAPI STREQUAL portaudio)
@@ -256,7 +266,9 @@ if(NOT NO_AVAHI)
 endif()
 
 
-if (AUDIOAPI STREQUAL jack)
+if (AUDIOAPI STREQUAL pipewire)
+    target_link_libraries(libscsynth PRIVATE ${PIPEWIRE_LINK_LIBRARIES})
+elseif (AUDIOAPI STREQUAL jack)
     target_link_libraries(libscsynth PRIVATE ${JACK_LINK_LIBRARIES})
 elseif(AUDIOAPI STREQUAL portaudio)
     target_link_libraries(libscsynth PRIVATE PortAudio::PortAudio)
