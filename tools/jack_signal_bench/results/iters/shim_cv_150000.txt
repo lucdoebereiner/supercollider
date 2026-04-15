@@ -1,0 +1,45 @@
+[bench] entered main
+[bench] opening jack
+[bench] explicit load iters=150000
+[bench] activating jack
+[bench] starting waiter thread
+running: mode=cv_any seconds=30 outputs=2 bufsize=1024 srate=48000 period=21333.3us
+[bench] sleep done, tearing down
+[bench] joining waiter
+
+callbacks=1407 wakeups=1408 dropped=0 deadline_misses=0 load_iters=150000
+
+=== cv_any [dur] ===
+  samples:   1407
+  period:    21333.3 us (jack buffer period)
+  mean:      5056.76 us   (cpu_load ~ 23.70 % of period)
+  stddev:     391.41 us
+  p50:       5025.11 us
+  p90:       5281.11 us
+  p99:       7222.18 us
+  p99.9:     8245.83 us
+  p99.99:    8354.01 us
+  max:       8451.22 us
+  spike p99/p50:     1.44x
+  spike p999/p50:    1.64x
+  spike max/mean:    1.67x
+  histogram (count >= bucket):
+    <  5000000 ns:      617 (43.85 %)
+    >= 5000000 ns:      790 (56.15 %)
+
+=== cv_any [gap] ===
+  samples:   1406
+  period:    21333.3 us (jack buffer period)
+  mean:      21333.59 us   (gap/period ~ 100.00 % of period)
+  stddev:     297.56 us
+  p50:       21327.06 us
+  p90:       21710.97 us
+  p99:       21979.74 us
+  p99.9:     22140.26 us
+  p99.99:    22178.31 us
+  max:       22313.37 us
+  spike p99/p50:     1.03x
+  spike p999/p50:    1.04x
+  spike max/mean:    1.05x
+  histogram (count >= bucket):
+    >= 5000000 ns:     1406 (100.00 %)

@@ -1,0 +1,56 @@
+[bench] creating thread loop
+[bench] creating stream
+[bench] connecting stream
+[bench] state: unconnected -> connecting
+[bench] starting thread loop
+[bench] waiting for stream to start
+[bench] state: connecting -> paused
+[bench] state: paused -> streaming
+[bench] 6 callbacks after preheat
+running: mode=sem_t seconds=60 outputs=2
+[bench] sleep done, tearing down
+
+callbacks=2812 wakeups=2813 dropped=0 period=21050.0us
+
+=== sem_t [dur] ===
+  samples:   2812
+  period:    21050.0 us
+  mean:         8.67 us   (cpu_load ~  0.04 % of period)
+  stddev:       5.03 us
+  p50:          8.03 us
+  p90:         12.19 us
+  p99:         23.40 us
+  p99.9:       63.70 us
+  p99.99:      74.18 us
+  max:        100.21 us
+  spike p99/p50:     2.92x
+  spike p999/p50:    7.94x
+  spike max/mean:   11.56x
+  histogram:
+    <     2000 ns:       16 ( 0.57 %)
+    <     5000 ns:      477 (16.96 %)
+    <    10000 ns:     1356 (48.22 %)
+    <    20000 ns:      923 (32.82 %)
+    <    50000 ns:       32 ( 1.14 %)
+    <   100000 ns:        7 ( 0.25 %)
+    <   200000 ns:        1 ( 0.04 %)
+
+=== sem_t [gap] ===
+  samples:   2811
+  period:    21050.0 us
+  mean:      21333.10 us   (gap/period ~ 101.34 % of period)
+  stddev:     486.79 us
+  p50:       21050.04 us
+  p90:       22039.14 us
+  p99:       22236.39 us
+  p99.9:     22549.72 us
+  p99.99:    22592.41 us
+  max:       22632.65 us
+  spike p99/p50:     1.06x
+  spike p999/p50:    1.07x
+  spike max/mean:    1.06x
+  histogram:
+    >= 5000000 ns:     2811 (100.00 %)
+wrote 2812 samples to results/pw_sem.csv
+[bench] state: streaming -> paused
+[bench] state: paused -> unconnected

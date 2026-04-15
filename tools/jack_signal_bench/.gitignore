@@ -1,0 +1,9 @@
+# Build artifacts — rebuild from the .cpp files next to them.
+jack_signal_bench
+pw_signal_bench
+pw_filter_autolink_test
+
+# Side-by-side scsynth binaries produced by the sweep workflow (each
+# ~850 KB). Rebuild with AUDIOAPI={jack,pipewire} and copy into place.
+scsynth_jack
+scsynth_pw

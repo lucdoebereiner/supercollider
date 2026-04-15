@@ -1,0 +1,44 @@
+[bench] entered main
+[bench] opening jack
+[bench] explicit load iters=650000
+[bench] activating jack
+[bench] starting waiter thread
+running: mode=sem_t seconds=30 outputs=2 bufsize=1024 srate=48000 period=21333.3us
+[bench] sleep done, tearing down
+[bench] joining waiter
+
+callbacks=1406 wakeups=1407 dropped=0 deadline_misses=4 load_iters=650000
+
+=== sem_t [dur] ===
+  samples:   1406
+  period:    21333.3 us (jack buffer period)
+  mean:      15311.68 us   (cpu_load ~ 71.77 % of period)
+  stddev:     844.83 us
+  p50:       15187.55 us
+  p90:       15569.30 us
+  p99:       20537.17 us
+  p99.9:     23102.38 us
+  p99.99:    23923.94 us
+  max:       23994.03 us
+  spike p99/p50:     1.35x
+  spike p999/p50:    1.52x
+  spike max/mean:    1.57x
+  histogram (count >= bucket):
+    >= 5000000 ns:     1406 (100.00 %)
+
+=== sem_t [gap] ===
+  samples:   1405
+  period:    21333.3 us (jack buffer period)
+  mean:      21333.66 us   (gap/period ~ 100.00 % of period)
+  stddev:     326.22 us
+  p50:       21332.72 us
+  p90:       21719.91 us
+  p99:       22008.96 us
+  p99.9:     23109.33 us
+  p99.99:    23926.36 us
+  max:       23996.59 us
+  spike p99/p50:     1.03x
+  spike p999/p50:    1.08x
+  spike max/mean:    1.12x
+  histogram (count >= bucket):
+    >= 5000000 ns:     1405 (100.00 %)

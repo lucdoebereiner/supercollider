@@ -1,0 +1,55 @@
+[bench] creating thread loop
+[bench] creating stream
+[bench] connecting stream
+[bench] state: unconnected -> connecting
+[bench] starting thread loop
+[bench] waiting for stream to start
+[bench] state: connecting -> paused
+[bench] state: paused -> streaming
+[bench] 6 callbacks after preheat
+running: mode=cv_any seconds=60 outputs=2
+[bench] sleep done, tearing down
+
+callbacks=2812 wakeups=2813 dropped=0 period=21019.0us
+
+=== cv_any [dur] ===
+  samples:   2812
+  period:    21019.0 us
+  mean:         6.54 us   (cpu_load ~  0.03 % of period)
+  stddev:       4.40 us
+  p50:          5.31 us
+  p90:         11.42 us
+  p99:         19.72 us
+  p99.9:       42.77 us
+  p99.99:      57.73 us
+  max:         58.92 us
+  spike p99/p50:     3.71x
+  spike p999/p50:    8.05x
+  spike max/mean:    9.01x
+  histogram:
+    <     2000 ns:       17 ( 0.60 %)
+    <     5000 ns:     1242 (44.17 %)
+    <    10000 ns:     1122 (39.90 %)
+    <    20000 ns:      403 (14.33 %)
+    <    50000 ns:       26 ( 0.92 %)
+    <   100000 ns:        2 ( 0.07 %)
+
+=== cv_any [gap] ===
+  samples:   2811
+  period:    21019.0 us
+  mean:      21333.21 us   (gap/period ~ 101.50 % of period)
+  stddev:     474.82 us
+  p50:       21018.97 us
+  p90:       22013.26 us
+  p99:       22118.53 us
+  p99.9:     22309.88 us
+  p99.99:    22390.67 us
+  max:       22609.34 us
+  spike p99/p50:     1.05x
+  spike p999/p50:    1.06x
+  spike max/mean:    1.06x
+  histogram:
+    >= 5000000 ns:     2811 (100.00 %)
+wrote 2812 samples to results/pw_cv.csv
+[bench] state: streaming -> paused
+[bench] state: paused -> unconnected
