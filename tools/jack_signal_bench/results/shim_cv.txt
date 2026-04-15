@@ -1,0 +1,49 @@
+[bench] entered main
+[bench] opening jack
+[bench] activating jack
+[bench] starting waiter thread
+running: mode=cv_any seconds=60 outputs=2 bufsize=1024 srate=48000 period=21333.3us
+[bench] sleep done, tearing down
+[bench] joining waiter
+
+callbacks=2813 wakeups=2813 dropped=0
+
+=== cv_any [dur] ===
+  samples:   2813
+  period:    21333.3 us (jack buffer period)
+  mean:        15.39 us   (cpu_load ~  0.07 % of period)
+  stddev:       7.31 us
+  p50:         16.48 us
+  p90:         22.06 us
+  p99:         27.13 us
+  p99.9:       62.58 us
+  p99.99:      63.67 us
+  max:         64.21 us
+  spike p99/p50:     1.65x
+  spike p999/p50:    3.80x
+  spike max/mean:    4.17x
+  histogram (count >= bucket):
+    <     2000 ns:        1 ( 0.04 %)
+    <     5000 ns:      264 ( 9.38 %)
+    <    10000 ns:      441 (15.68 %)
+    <    20000 ns:     1046 (37.18 %)
+    <    50000 ns:     1045 (37.15 %)
+    <   100000 ns:       16 ( 0.57 %)
+
+=== cv_any [gap] ===
+  samples:   2812
+  period:    21333.3 us (jack buffer period)
+  mean:      21333.34 us   (gap/period ~ 100.00 % of period)
+  stddev:     238.48 us
+  p50:       21333.70 us
+  p90:       21650.82 us
+  p99:       21947.07 us
+  p99.9:     22170.99 us
+  p99.99:    22293.31 us
+  max:       22344.04 us
+  spike p99/p50:     1.03x
+  spike p999/p50:    1.04x
+  spike max/mean:    1.05x
+  histogram (count >= bucket):
+    >= 5000000 ns:     2812 (100.00 %)
+wrote 2813 samples to results/shim_cv.csv

@@ -1,0 +1,52 @@
+[bench] creating thread loop
+[bench] creating stream
+[bench] connecting stream
+[bench] state: unconnected -> connecting
+[bench] starting thread loop
+[bench] waiting for stream to start
+[bench] state: connecting -> paused
+[bench] state: paused -> streaming
+[bench] 6 callbacks after preheat
+[bench] preheat period estimate: 21919.8 us
+[bench] explicit load iters=150000
+running: mode=sem_t seconds=30 outputs=2
+[bench] sleep done, tearing down
+
+callbacks=1406 wakeups=1407 dropped=0 deadline_misses=0 load_iters=150000 period=21071.1us
+
+=== sem_t [dur] ===
+  samples:   1406
+  period:    21071.1 us
+  mean:      3458.38 us   (cpu_load ~ 16.41 % of period)
+  stddev:     542.59 us
+  p50:       3391.33 us
+  p90:       4087.47 us
+  p99:       5140.97 us
+  p99.9:     6739.30 us
+  p99.99:    6781.48 us
+  max:       7009.51 us
+  spike p99/p50:     1.52x
+  spike p999/p50:    1.99x
+  spike max/mean:    2.03x
+  histogram:
+    <  5000000 ns:     1386 (98.58 %)
+    >= 5000000 ns:       20 ( 1.42 %)
+
+=== sem_t [gap] ===
+  samples:   1405
+  period:    21071.1 us
+  mean:      21343.13 us   (gap/period ~ 101.29 % of period)
+  stddev:     521.46 us
+  p50:       21071.10 us
+  p90:       22039.62 us
+  p99:       22463.94 us
+  p99.9:     22660.15 us
+  p99.99:    22698.93 us
+  max:       22777.94 us
+  spike p99/p50:     1.07x
+  spike p999/p50:    1.08x
+  spike max/mean:    1.07x
+  histogram:
+    >= 5000000 ns:     1405 (100.00 %)
+[bench] state: streaming -> paused
+[bench] state: paused -> unconnected

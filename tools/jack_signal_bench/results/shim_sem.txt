@@ -1,0 +1,49 @@
+[bench] entered main
+[bench] opening jack
+[bench] activating jack
+[bench] starting waiter thread
+running: mode=sem_t seconds=60 outputs=2 bufsize=1024 srate=48000 period=21333.3us
+[bench] sleep done, tearing down
+[bench] joining waiter
+
+callbacks=2813 wakeups=2814 dropped=0
+
+=== sem_t [dur] ===
+  samples:   2813
+  period:    21333.3 us (jack buffer period)
+  mean:        14.54 us   (cpu_load ~  0.07 % of period)
+  stddev:       4.91 us
+  p50:         16.12 us
+  p90:         18.36 us
+  p99:         20.91 us
+  p99.9:       58.27 us
+  p99.99:      58.80 us
+  max:         61.42 us
+  spike p99/p50:     1.30x
+  spike p999/p50:    3.61x
+  spike max/mean:    4.23x
+  histogram (count >= bucket):
+    <     2000 ns:        3 ( 0.11 %)
+    <     5000 ns:      130 ( 4.62 %)
+    <    10000 ns:      349 (12.41 %)
+    <    20000 ns:     2283 (81.16 %)
+    <    50000 ns:       42 ( 1.49 %)
+    <   100000 ns:        6 ( 0.21 %)
+
+=== sem_t [gap] ===
+  samples:   2812
+  period:    21333.3 us (jack buffer period)
+  mean:      21333.34 us   (gap/period ~ 100.00 % of period)
+  stddev:     249.24 us
+  p50:       21333.92 us
+  p90:       21664.01 us
+  p99:       21941.40 us
+  p99.9:     22095.08 us
+  p99.99:    22156.12 us
+  max:       22271.72 us
+  spike p99/p50:     1.03x
+  spike p999/p50:    1.04x
+  spike max/mean:    1.04x
+  histogram (count >= bucket):
+    >= 5000000 ns:     2812 (100.00 %)
+wrote 2813 samples to results/shim_sem.csv

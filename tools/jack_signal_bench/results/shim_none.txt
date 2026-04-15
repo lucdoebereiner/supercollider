@@ -1,0 +1,47 @@
+[bench] entered main
+[bench] opening jack
+[bench] activating jack
+[bench] starting waiter thread
+running: mode=none seconds=60 outputs=2 bufsize=1024 srate=48000 period=21333.3us
+[bench] sleep done, tearing down
+[bench] joining waiter
+
+callbacks=2813 wakeups=119025 dropped=0
+
+=== none [dur] ===
+  samples:   2813
+  period:    21333.3 us (jack buffer period)
+  mean:         1.08 us   (cpu_load ~  0.01 % of period)
+  stddev:       0.55 us
+  p50:          0.99 us
+  p90:          1.70 us
+  p99:          3.26 us
+  p99.9:        5.93 us
+  p99.99:       6.24 us
+  max:          6.90 us
+  spike p99/p50:     3.28x
+  spike p999/p50:    5.98x
+  spike max/mean:    6.37x
+  histogram (count >= bucket):
+    <     1000 ns:     1634 (58.09 %)
+    <     2000 ns:     1013 (36.01 %)
+    <     5000 ns:      161 ( 5.72 %)
+    <    10000 ns:        5 ( 0.18 %)
+
+=== none [gap] ===
+  samples:   2812
+  period:    21333.3 us (jack buffer period)
+  mean:      21333.32 us   (gap/period ~ 100.00 % of period)
+  stddev:       9.83 us
+  p50:       21333.22 us
+  p90:       21342.66 us
+  p99:       21363.19 us
+  p99.9:     21393.36 us
+  p99.99:    21404.54 us
+  max:       21437.73 us
+  spike p99/p50:     1.00x
+  spike p999/p50:    1.00x
+  spike max/mean:    1.00x
+  histogram (count >= bucket):
+    >= 5000000 ns:     2812 (100.00 %)
+wrote 2813 samples to results/shim_none.csv
