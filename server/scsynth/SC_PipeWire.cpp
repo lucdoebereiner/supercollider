@@ -265,6 +265,15 @@ bool SC_PipeWireDriver::createOutputStream(int numChannels) {
     info.format = SPA_AUDIO_FORMAT_F32;
     info.channels = uint32_t(numChannels);
     info.rate = 0; // let pipewire negotiate
+    // Without an explicit channel position array, pipewire defaults to
+    // stereo FL/FR and silently narrows any larger channel count down to
+    // two during format negotiation (qpwgraph then only shows output_FL
+    // and output_FR). Map every channel to AUX0..AUXN-1 so the channels
+    // are treated as "arbitrary, no surround meaning" — same idea as
+    // JACK's out_1..out_N ports.
+    const int nCh = sc_min(numChannels, int(SPA_AUDIO_MAX_CHANNELS));
+    for (int i = 0; i < nCh; ++i)
+        info.position[i] = uint32_t(SPA_AUDIO_CHANNEL_AUX0 + i);
     const struct spa_pod* params[1];
     params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
 
@@ -299,6 +308,11 @@ bool SC_PipeWireDriver::createInputStream(int numChannels) {
     info.format = SPA_AUDIO_FORMAT_F32;
     info.channels = uint32_t(numChannels);
     info.rate = 0;
+    // See createOutputStream: map each channel to AUX0..AUXN-1 so
+    // pipewire doesn't silently narrow the count down to stereo.
+    const int nCh = sc_min(numChannels, int(SPA_AUDIO_MAX_CHANNELS));
+    for (int i = 0; i < nCh; ++i)
+        info.position[i] = uint32_t(SPA_AUDIO_CHANNEL_AUX0 + i);
     const struct spa_pod* params[1];
     params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
 
