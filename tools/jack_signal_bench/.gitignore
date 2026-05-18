@@ -7,3 +7,8 @@ pw_filter_autolink_test
 # ~850 KB). Rebuild with AUDIOAPI={jack,pipewire} and copy into place.
 scsynth_jack
 scsynth_pw
+scsynth_pw_new
+scsynth_jack_new
+scsynth_pw
+scsynth_jack
+results/
