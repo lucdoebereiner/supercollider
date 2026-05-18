@@ -11,9 +11,11 @@ experiment. It lives in `server/scsynth/SC_PipeWire.cpp`, is selected at
 configure time with `-DAUDIOAPI=pipewire`, and is **full-duplex**: it
 auto-connects both playback and capture streams to the default PipeWire
 sink/source on this host, honours scsynth's `-H` flag for device
-selection, discovers format via `param_changed`, parses latency params,
-handles `-i 0` correctly (no input stream), and preserves v0's ~40% CPU
-savings vs the libjack-on-PipeWire shim under load.
+selection, `-S` for sample rate and `-Z` for quantum (via PipeWire's
+`FORCE_RATE` / `FORCE_QUANTUM` properties), discovers format via
+`param_changed`, parses latency params, handles `-i 0` correctly (no
+input stream), adapts to mid-run quantum changes, and preserves v0's
+~40% CPU savings vs the libjack-on-PipeWire shim under load.
 
 There is **no RFC, no upstream PR, no discussion with SC core**. This is a
 private branch experiment. Do not ship anything from here without going
@@ -40,11 +42,43 @@ through that process first.
 - **Latency reporting** via `param_changed(SPA_PARAM_Latency)` using
   `spa_latency_parse`. `mMaxOutputLatency` is now populated from the
   graph instead of hardcoded 0.
-- **Quantum-change detection** (best effort): `RunOutput()` compares the
-  current `nFrames` to `mCurrentQuantum` and, if they differ, logs a
-  warning and drops the buffer. Mid-run quantum changes are rare in
-  practice and mid-run `Reset(sr, bufsize)` is dangerous; this is the
-  safer minimum.
+- **Adaptive quantum-change handling**: `RunOutput()` (and `RunInput()`)
+  detect when `nFrames` differs from `mCurrentQuantum` and call
+  `handleQuantumChange()`, which updates `mNumSamplesPerCallback`,
+  `mPeriodNs`, resizes `mCaptureBuf` (within capacity reserved up-front
+  to `kMaxAcceptableQuantum = 8192` frames so the RT resize never
+  allocates), and resets the DLL. If the new quantum is a multiple of
+  `world->mBufLength` the buffer is processed normally; otherwise it is
+  dropped with a rate-limited log.
+- **`-S` / `-Z` honoured via `FORCE_RATE` / `FORCE_QUANTUM`**: both
+  streams set `PW_KEY_NODE_FORCE_QUANTUM` to
+  `mPreferredHardwareBufferFrameSize` (defaulting to 1024), and
+  `PW_KEY_NODE_FORCE_RATE` to `mPreferredSampleRate` when set. `-Z 256`,
+  `-Z 512`, `-Z 2048` all yield exactly that quantum at the graph rate.
+- **`-S` works for any clean-integer-ratio rate**: the first process()
+  callback after format negotiation is a resampler warmup transient
+  (e.g. 2081 frames at -S 192000, 545 at -S 24000) that lands on a
+  non-aligned value. The setup handshake now waits for `nFrames` to
+  stay the same for two consecutive callbacks before locking in the
+  negotiated quantum. On a 48000 graph: -S 96000 yields a stable
+  1024-frame callback, -S 192000 yields 2048, -S 24000 yields 512 —
+  all `bufLength`-aligned, all work via PipeWire's internal resampler.
+  -S 44100 aborts cleanly when the graph can't switch to 44100: the
+  steady state genuinely oscillates between 940 and 941 (non-integer
+  147/160 ratio with 48000), so no single value is correct.
+- **Stream rate is communicated only via `info.rate`, not `FORCE_RATE`**.
+  An earlier version set `PW_KEY_NODE_FORCE_RATE` whenever `-S` was
+  given (the pattern pipewire-jack uses for JACK clients). On systems
+  where the requested rate wasn't in `clock.allowed-rates`, the
+  combination produced audible modulation / buzzing on otherwise-clean
+  ratios (96k, 192k) — likely because PipeWire was holding inconsistent
+  producer/consumer rate semantics in the resampler when FORCE_RATE
+  couldn't actually move the graph. Removed: now we only set
+  `info.rate = mPreferredSampleRate`, the standard
+  format-negotiation path, and let PipeWire resample as it would for
+  any other client. `-S` works whether or not the rate is in
+  `allowed-rates`, as long as the resampler delivers an aligned
+  steady-state chunk size.
 - **Setup handshake is now condition-variable driven by
   `mOutFormatKnown && mInFormatKnown` plus the first process callback**
   rather than the v0 "grab rate from pw_stream_get_time_n" hack.
@@ -139,14 +173,16 @@ v0 items that are now DONE in v1:
 
 Items that are still open as of v1 (ordered by practical importance):
 
-1. **Quantum-change handling is best-effort, not complete.** If PipeWire
-   renegotiates the buffer size mid-session, `RunOutput()` logs a warning
-   and drops the buffer, but doesn't call `Reset(sampleRate, bufferSize)`
-   to update `mNumSamplesPerCallback`. A proper fix would need to stop
-   the streams, reset the driver, restart — all within the RT thread's
-   context, which is tricky. Not verified in practice: I didn't force a
-   quantum change in testing (would disrupt user's live PipeWire graph).
-   Code path exists but is untested.
+1. **`-S` only fails for rates with no clean integer ratio to the graph
+   rate** (44.1k against 48k is the main case in practice). The
+   resampler's steady-state chunk size oscillates between two adjacent
+   integers, neither aligned to `world->mBufLength`. Two paths to
+   remove this last limitation: (a) enable 44100 in PipeWire's
+   `clock.allowed-rates` so the graph switches (the abort message tells
+   the user how); or (b) add an internal re-blocking stage that
+   accumulates variable-sized PipeWire chunks into bufLength-aligned
+   DSP blocks — about 50 lines, adds up to one callback of latency,
+   lets every rate work. Not done.
 2. **Capture data flow verified only at the graph level.** `pw-link`
    confirms the input stream is connected and reaches `streaming`, and
    `RunInput()` dequeues buffers without crashing, but I have not

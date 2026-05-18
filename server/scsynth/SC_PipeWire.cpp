@@ -38,6 +38,7 @@
 #include <condition_variable>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -151,6 +152,13 @@ private:
     int mNegotiatedInChannels = 0;
     bool mOutFormatKnown = false;
     bool mInFormatKnown = false;
+    // Used during the setup handshake to detect when PipeWire's resampler
+    // has settled. The first process() callback after format negotiation
+    // is a resampler-warmup transient that returns a non-aligned frame
+    // count (e.g. 2081 for a 192k stream against a 48k graph, before
+    // settling on 2048). We track the previous nFrames and only lock the
+    // negotiated quantum in when we see the same value twice in a row.
+    uint32_t mSetupPrevFrames = 0;
 
     // Runtime quantum/rate tracking for renegotiation detection.
     uint32_t mCurrentQuantum = 0;
@@ -168,6 +176,15 @@ private:
     bool createInputStream(int numChannels);
     void tryCompleteSetup();
     void signalSetup();
+    // Adapt to a quantum change from PipeWire. Called on the data thread
+    // (RT) from RunOutput/RunInput. Returns false if the new quantum is
+    // unworkable (zero, > kMaxAcceptableQuantum, or not an integer
+    // multiple of world->mBufLength), in which case the caller must drop
+    // the buffer. mCaptureBuf is resized within its preallocated capacity
+    // so this remains allocation-free on the RT thread.
+    bool handleQuantumChange(uint32_t newFrames);
+
+    static constexpr uint32_t kMaxAcceptableQuantum = 8192;
 };
 
 SC_AudioDriver* SC_NewAudioDriver(struct World* inWorld) { return new SC_PipeWireDriver(inWorld); }
@@ -253,6 +270,23 @@ bool SC_PipeWireDriver::createOutputStream(int numChannels) {
                                              nullptr);
     if (!mOutTarget.empty())
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, mOutTarget.c_str());
+    // The stream's sample rate is communicated via info.rate (below).
+    // PW_KEY_NODE_FORCE_RATE is for forcing the *graph* rate, not just
+    // declaring the node's format rate. On systems where the requested
+    // rate isn't listed in clock.allowed-rates, FORCE_RATE produced bad
+    // interactions with PipeWire's resampler (audible buzzing /
+    // modulation on otherwise-clean ratios like 96k and 192k). The
+    // graph stays at its own rate and PipeWire resamples our stream to
+    // match — same behaviour any other audio client gets.
+    // PW_KEY_NODE_FORCE_QUANTUM stays: it pins the graph quantum to a
+    // bufLength-friendly value, which makes the resampler's steady-state
+    // chunk size land on a multiple of world->mBufLength.
+    {
+        const uint32_t quantum = mPreferredHardwareBufferFrameSize ? mPreferredHardwareBufferFrameSize : 1024;
+        char qStr[32];
+        std::snprintf(qStr, sizeof(qStr), "%u", quantum);
+        pw_properties_set(props, PW_KEY_NODE_FORCE_QUANTUM, qStr);
+    }
 
     mOutStream = pw_stream_new_simple(pw_thread_loop_get_loop(mLoop), "SuperCollider out", props,
                                       &kOutEvents, this);
@@ -264,7 +298,7 @@ bool SC_PipeWireDriver::createOutputStream(int numChannels) {
     spa_audio_info_raw info = {};
     info.format = SPA_AUDIO_FORMAT_F32;
     info.channels = uint32_t(numChannels);
-    info.rate = 0; // let pipewire negotiate
+    info.rate = mPreferredSampleRate; // 0 == let pipewire pick the graph rate
     // Without an explicit channel position array, pipewire defaults to
     // stereo FL/FR and silently narrows any larger channel count down to
     // two during format negotiation (qpwgraph then only shows output_FL
@@ -296,6 +330,12 @@ bool SC_PipeWireDriver::createInputStream(int numChannels) {
                                              nullptr);
     if (!mInTarget.empty())
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, mInTarget.c_str());
+    {
+        const uint32_t quantum = mPreferredHardwareBufferFrameSize ? mPreferredHardwareBufferFrameSize : 1024;
+        char qStr[32];
+        std::snprintf(qStr, sizeof(qStr), "%u", quantum);
+        pw_properties_set(props, PW_KEY_NODE_FORCE_QUANTUM, qStr);
+    }
 
     mInStream = pw_stream_new_simple(pw_thread_loop_get_loop(mLoop), "SuperCollider in", props,
                                      &kInEvents, this);
@@ -307,7 +347,7 @@ bool SC_PipeWireDriver::createInputStream(int numChannels) {
     spa_audio_info_raw info = {};
     info.format = SPA_AUDIO_FORMAT_F32;
     info.channels = uint32_t(numChannels);
-    info.rate = 0;
+    info.rate = mPreferredSampleRate;
     // See createOutputStream: map each channel to AUX0..AUXN-1 so
     // pipewire doesn't silently narrow the count down to stereo.
     const int nCh = sc_min(numChannels, int(SPA_AUDIO_MAX_CHANNELS));
@@ -390,11 +430,40 @@ bool SC_PipeWireDriver::DriverSetup(int* outNumSamples, double* outSampleRate) {
 
     scprintf("%s: negotiated %d samples @ %.1f Hz, %d out / %d in channel(s)\n", kPwDriverIdent,
              mNegotiatedBufSize, mNegotiatedRate, mNegotiatedOutChannels, numInputs);
+    // After the setup handshake waits for steady-state (see RunOutput),
+    // any rate with a clean integer ratio to the graph rate yields a
+    // bufLength-aligned quantum (e.g. 24k/96k/192k against a 48k graph
+    // give 512/1024/2048-frame callbacks). Rates without a clean ratio
+    // (e.g. 44.1k against 48k) have a steady state that genuinely
+    // oscillates between two adjacent non-aligned integers and can't
+    // work without internal re-blocking.
+    if (mWorld->mBufLength > 0 && (mNegotiatedBufSize % mWorld->mBufLength) != 0) {
+        scprintf("%s: steady-state quantum %d is not a multiple of scsynth block size %d.\n",
+                 kPwDriverIdent, mNegotiatedBufSize, mWorld->mBufLength);
+        if (mPreferredSampleRate > 0
+            && std::fabs(mNegotiatedRate - double(mPreferredSampleRate)) < 0.5) {
+            scprintf("%s: the requested stream rate (%u Hz) has no clean integer ratio with the\n"
+                     "  %s PipeWire graph rate, so the resampler oscillates between adjacent\n"
+                     "  %s chunk sizes. Options:\n"
+                     "  %s   - add the rate to PipeWire's allowed-rates so the graph switches:\n"
+                     "  %s       pw-metadata -n settings 0 clock.allowed-rates '[ %u 48000 ]'\n"
+                     "  %s   - omit -S to use the current graph rate\n"
+                     "  %s   - use a rate with a clean integer ratio (24k/96k/192k against a\n"
+                     "  %s     48k graph all work via PipeWire's resampler)\n",
+                     kPwDriverIdent, mPreferredSampleRate, kPwDriverIdent, kPwDriverIdent, kPwDriverIdent,
+                     mPreferredSampleRate, kPwDriverIdent, kPwDriverIdent, kPwDriverIdent);
+        }
+        return false;
+    }
     if (mMaxOutputLatency > 0.0)
         scprintf("%s: reported output latency %.2f ms\n", kPwDriverIdent, mMaxOutputLatency * 1e3);
 
     if (numInputs > 0) {
         mCaptureChannels = numInputs;
+        // Reserve enough room for the largest quantum we'll accept so that
+        // mid-run resize() from handleQuantumChange() never reallocates on
+        // the RT thread. Then size to the current negotiated quantum.
+        mCaptureBuf.reserve(size_t(numInputs) * size_t(kMaxAcceptableQuantum));
         mCaptureBuf.assign(size_t(numInputs) * size_t(mNegotiatedBufSize), 0.0f);
     }
 
@@ -522,6 +591,34 @@ void SC_PipeWireDriver::signalSetup() {
     mSetupCond.notify_one();
 }
 
+bool SC_PipeWireDriver::handleQuantumChange(uint32_t newFrames) {
+    if (newFrames == 0 || newFrames > kMaxAcceptableQuantum)
+        return false;
+    const int bufFrames = mWorld ? mWorld->mBufLength : 0;
+    if (bufFrames <= 0 || int(newFrames) % bufFrames != 0)
+        return false;
+
+    mCurrentQuantum = newFrames;
+    mNumSamplesPerCallback = int(newFrames);
+    if (mNegotiatedRate > 0.0)
+        mPeriodNs = 1e9 * double(newFrames) / mNegotiatedRate;
+
+    if (mCaptureChannels > 0) {
+        // Safe: capacity was reserved in DriverSetup to kMaxAcceptableQuantum
+        // frames per channel, so this resize() does not allocate.
+        mCaptureBuf.resize(size_t(mCaptureChannels) * size_t(newFrames), 0.0f);
+        // Existing input data is laid out for the previous mCaptureFrames
+        // stride and is now stale; invalidate so output zero-fills until
+        // the next input callback refills with the new stride.
+        mCaptureValid = false;
+        mCaptureFrames = 0;
+    }
+
+    if (mSampleRate > 0.0)
+        mDLL.Reset(mSampleRate, mNumSamplesPerCallback, SC_TIME_DLL_BW, pwOscTimeSeconds());
+    return true;
+}
+
 // =====================================================================
 // RunInput: capture stream process callback
 // Just stash the most recent capture buffer in the shared planar buffer.
@@ -548,6 +645,12 @@ void SC_PipeWireDriver::RunInput() {
     const uint32_t offset = chunk ? chunk->offset : 0;
     const uint32_t size = chunk ? chunk->size : 0;
     const uint32_t nFrames = size / stride;
+
+    // If input fires first on a new (larger) quantum, grow the capture
+    // buffer up front so the bounds check below doesn't drop the data.
+    // Output's RunOutput will see the already-updated state.
+    if (mSetupReady && nFrames != mCurrentQuantum && nFrames > 0)
+        handleQuantumChange(nFrames);
 
     const float* interleaved = reinterpret_cast<const float*>(
         static_cast<const uint8_t*>(sbuf->datas[0].data) + offset);
@@ -596,13 +699,20 @@ void SC_PipeWireDriver::RunOutput() {
         pw_stream_queue_buffer(mOutStream, pwBuf);
     };
 
-    // Setup handshake: on first callback with a real buffer, record the
-    // quantum and signal DriverSetup. Keep outputting silence until the
-    // format param has also been seen.
+    // Setup handshake: capture the *steady-state* quantum, not the first
+    // callback's value. After a stream rate change PipeWire's resampler
+    // emits a transient on cb#0 (e.g. 2081 at -S 192000) before settling
+    // on its actual cycle size (2048 in that example). Wait until we see
+    // nFrames stay the same for two callbacks in a row, then lock it in
+    // and signal DriverSetup. Until then, keep outputting silence.
     if (!mSetupReady) {
         if (interleaved && nFrames > 0 && mNegotiatedBufSize == 0) {
-            mNegotiatedBufSize = int(nFrames);
-            mCurrentQuantum = nFrames;
+            if (mSetupPrevFrames == nFrames) {
+                mNegotiatedBufSize = int(nFrames);
+                mCurrentQuantum = nFrames;
+            } else {
+                mSetupPrevFrames = nFrames;
+            }
         }
         signalSetup();
         zeroAndQueue();
@@ -616,21 +726,30 @@ void SC_PipeWireDriver::RunOutput() {
         return;
     }
 
-    // Quantum or rate change detection: if the graph renegotiated, tell
-    // the World via the public Reset path. We can't actually *change*
-    // mNumSamplesPerCallback safely mid-run without a lot of care, so for
-    // v1 we log, skip the buffer, and hope the graph settles. This is a
-    // rare path — quantum changes usually happen once at startup.
+    // Quantum-change handling. PipeWire is allowed to renegotiate the
+    // graph quantum at any time (most commonly right after startup while
+    // the graph rate is converging, but also after suspend/resume or when
+    // another client joins with a stricter latency request). Adapt the
+    // driver bookkeeping in place; only drop the buffer if the new
+    // quantum is unworkable (e.g. not divisible by world->mBufLength).
     if (nFrames != mCurrentQuantum && nFrames > 0) {
-        static int warned = 0;
-        if (warned < 3) {
-            scprintf("%s: quantum changed %u -> %u (not yet supported mid-run, dropping buffer)\n",
-                     kPwDriverIdent, mCurrentQuantum, nFrames);
-            warned++;
+        const uint32_t oldQuantum = mCurrentQuantum;
+        if (handleQuantumChange(nFrames)) {
+            scprintf("%s: quantum changed %u -> %u (adapted)\n", kPwDriverIdent, oldQuantum, nFrames);
+        } else {
+            if (mDropoutReportCounter <= 0) {
+                scprintf("%s: quantum changed %u -> %u (unworkable: not aligned to bufLength %d "
+                         "or > %u; dropping buffer)\n",
+                         kPwDriverIdent, oldQuantum, nFrames, mWorld ? mWorld->mBufLength : 0,
+                         kMaxAcceptableQuantum);
+                mDropoutReportCounter = mMaxPeakCounter;
+            } else {
+                --mDropoutReportCounter;
+            }
+            zeroAndQueue();
+            mAudioSync.Signal();
+            return;
         }
-        zeroAndQueue();
-        mAudioSync.Signal();
-        return;
     }
 
     const uint64_t rtT0 = monotonic_ns();
