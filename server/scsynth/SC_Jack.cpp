@@ -373,17 +373,7 @@ void sc_SetDenormalFlags();
 void SC_JackDriver::Run() {
     sc_SetDenormalFlags();
     jack_client_t* client = mClient;
-    (void)client;
     World* world = mWorld;
-
-    // Local experimental change (not upstream): measure callback wall time
-    // ourselves via CLOCK_MONOTONIC so that mAvgCPU/mPeakCPU and the xrun
-    // tag use the same accounting as SC_PipeWire.cpp (which has no
-    // jack_cpu_load analog). Replaces the `jack_cpu_load(mClient)` call at
-    // the end of Run().
-    struct timespec _rt_t0;
-    clock_gettime(CLOCK_MONOTONIC, &_rt_t0);
-    const uint64_t rtT0 = uint64_t(_rt_t0.tv_sec) * 1000000000ull + uint64_t(_rt_t0.tv_nsec);
 
     mDLL.Update(jackOscTimeSeconds());
 #if SC_JACK_DEBUG_DLL
@@ -498,31 +488,11 @@ void SC_JackDriver::Run() {
         scprintf("%s: exception in real time: %s\n", kJackDriverIdent, exc.what());
     } catch (...) { scprintf("%s: unknown exception in real time\n", kJackDriverIdent); }
 
-    // Wall-time-based cpu accounting to match SC_PipeWire.cpp (see note at
-    // top of Run). Replaces jack_cpu_load() which on the PipeWire libjack
-    // shim returns a smoothed/capped value that makes the two backends
-    // incomparable.
-    struct timespec _rt_t1;
-    clock_gettime(CLOCK_MONOTONIC, &_rt_t1);
-    const uint64_t rtT1 = uint64_t(_rt_t1.tv_sec) * 1000000000ull + uint64_t(_rt_t1.tv_nsec);
-    const double periodNs = double(mNumSamplesPerCallback) * 1e9 / mSampleRate;
-    const double cpuUsage = periodNs > 0.0 ? 100.0 * (double(rtT1 - rtT0) / periodNs) : 0.0;
+    double cpuUsage = (double)jack_cpu_load(mClient);
     mAvgCPU = mAvgCPU + 0.1 * (cpuUsage - mAvgCPU);
     if (cpuUsage > mPeakCPU || --mPeakCounter <= 0) {
         mPeakCPU = cpuUsage;
         mPeakCounter = mMaxPeakCounter;
-    }
-    // Local experimental xrun tag: matches SC_PipeWire.cpp so the sweep
-    // harness counts overruns the same way on both backends.
-    static int _xrunReportCounter = 0;
-    if (periodNs > 0.0 && double(rtT1 - rtT0) > periodNs) {
-        if (_xrunReportCounter <= 0) {
-            scprintf("%s: xrun (callback %.2f ms, period %.2f ms)\n", kJackDriverIdent,
-                     double(rtT1 - rtT0) / 1e6, periodNs / 1e6);
-            _xrunReportCounter = mMaxPeakCounter;
-        } else {
-            _xrunReportCounter--;
-        }
     }
 
     mAudioSync.Signal();
