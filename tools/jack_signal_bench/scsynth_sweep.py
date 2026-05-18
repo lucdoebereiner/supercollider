@@ -25,7 +25,11 @@ Method:
 
 import argparse, json, os, socket, struct, subprocess, sys, time
 
-SYNTHDEF = "/home/luc/src/SuperCollider/testsuite/server/supernova/default.scsyndef"
+# Default synthdef path: testsuite/server/supernova/default.scsyndef relative
+# to the repo root (this script lives in tools/jack_signal_bench/). Override
+# with --synthdef if running outside the SC tree.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+SYNTHDEF = os.path.join(_REPO_ROOT, "testsuite", "server", "supernova", "default.scsyndef")
 
 
 def pad4(b):
@@ -103,6 +107,8 @@ def main():
     ap.add_argument("--seconds", type=float, default=8.0)
     ap.add_argument("--port", type=int, default=57113)
     ap.add_argument("--label", default=None, help="label to include in output")
+    ap.add_argument("--synthdef", default=SYNTHDEF,
+                    help="path to a binary .scsyndef (default: testsuite/.../default.scsyndef in the SC tree)")
     args = ap.parse_args()
 
     env = os.environ.copy()
@@ -177,7 +183,7 @@ def main():
     target = ("127.0.0.1", args.port)
 
     # Load synthdef.
-    with open(SYNTHDEF, "rb") as f:
+    with open(args.synthdef, "rb") as f:
         sdef_blob = f.read()
     sock.sendto(osc_msg("/d_recv", "b", sdef_blob), target)
     time.sleep(0.1)
