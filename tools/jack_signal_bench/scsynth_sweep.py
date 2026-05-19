@@ -109,6 +109,8 @@ def main():
     ap.add_argument("--label", default=None, help="label to include in output")
     ap.add_argument("--synthdef", default=SYNTHDEF,
                     help="path to a binary .scsyndef (default: testsuite/.../default.scsyndef in the SC tree)")
+    ap.add_argument("--inputs", type=int, default=None, help="scsynth -i (input channel count)")
+    ap.add_argument("--outputs", type=int, default=None, help="scsynth -o (output channel count)")
     args = ap.parse_args()
 
     env = os.environ.copy()
@@ -120,15 +122,20 @@ def main():
     # xrun tags. -n (nodes), -m (RT mem KB), -w (wire bufs), -a (audio
     # buses) are all bumped so the sweep can actually instantiate many
     # voices instead of silently capping at scsynth defaults.
+    scsynth_argv = [
+        args.binary,
+        "-u", str(args.port),
+        "-n", "16384",     # max nodes
+        "-m", "131072",    # RT memory KB (128 MB)
+        "-w", "8192",      # wire buffers
+        "-a", "4096",      # audio bus channels
+    ]
+    if args.inputs is not None:
+        scsynth_argv += ["-i", str(args.inputs)]
+    if args.outputs is not None:
+        scsynth_argv += ["-o", str(args.outputs)]
     proc = subprocess.Popen(
-        [
-            args.binary,
-            "-u", str(args.port),
-            "-n", "16384",     # max nodes
-            "-m", "131072",    # RT memory KB (128 MB)
-            "-w", "8192",      # wire buffers
-            "-a", "4096",      # audio bus channels
-        ],
+        scsynth_argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         env=env,
