@@ -100,12 +100,17 @@ cmake --build build --target sclang -j
 
 ## Run
 
-`cmake --install` puts `RustExt.sc` in the Extensions dir for you. If you run
-from the build tree instead, copy it once:
+On **Linux**, `cmake --install` puts `RustExt.sc` in the system extension dir for
+you (`<prefix>/share/SuperCollider/Extensions`, which that sclang scans). On
+**macOS/Windows** the system extension dir is an absolute OS path outside the
+install prefix, so the build can't place it there — copy it by hand. Either way,
+running from a build tree also means copying it once:
 
 ```sh
+# Linux build tree, or any platform: drop it where sclang looks
 cp sc-rust-prim/classes/RustExt.sc "$HOME/.local/share/SuperCollider/Extensions/"
-# (or wherever Platform.userExtensionDir points)
+# macOS: ~/Library/Application Support/SuperCollider/Extensions/
+# (i.e. Platform.userExtensionDir — check with `Platform.userExtensionDir` in sclang)
 ```
 
 The example primitives are `rust*` methods on the natural types:

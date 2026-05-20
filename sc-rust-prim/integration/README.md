@@ -63,9 +63,11 @@ sc_rust_register_all();
 
 ## 4. Install the class extensions
 
-`cmake --install` (with `SC_RUST_PRIMITIVES=ON`) copies `classes/RustExt.sc` into
-`share/SuperCollider/Extensions` for you. If you run from the build tree instead,
-copy it once into your user extensions dir:
+On **Linux**, `cmake --install` (with `SC_RUST_PRIMITIVES=ON`) copies
+`classes/RustExt.sc` into `<prefix>/share/SuperCollider/Extensions` for you (that
+sclang's system extension dir). On **macOS/Windows** the system extension dir is
+an absolute OS path outside the prefix, so copy it by hand. Either way, build-tree
+runs also need a manual copy into your user extensions dir:
 
 ```sh
 cp ../classes/RustExt.sc "$(echo ~)/.local/share/SuperCollider/Extensions/"

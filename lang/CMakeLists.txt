@@ -229,8 +229,24 @@ if(SC_RUST_PRIMITIVES)
 	endif()
 	# Install the class extensions (the rust* methods) so the installed sclang
 	# loads them. Kept out of SCClassLibrary so non-feature builds stay clean.
-	install(FILES "${SC_RUST_PRIM_DIR}/classes/RustExt.sc"
-		DESTINATION "share/SuperCollider/Extensions")
+	#
+	# sclang scans <systemAppSupportDir>/Extensions. On Linux that is
+	# <prefix>/share/SuperCollider/Extensions (it tracks SC_DATA_DIR, which is
+	# baked from CMAKE_INSTALL_PREFIX), so a prefix-relative install is correct.
+	# On macOS/Windows the system extension dir is an absolute OS path outside the
+	# install prefix (/Library/Application Support/SuperCollider/Extensions, resp.
+	# %PROGRAMDATA%/SuperCollider/Extensions), which a relocatable install() must
+	# not write into — copy RustExt.sc there (or into Platform.userExtensionDir)
+	# by hand on those platforms.
+	if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+		install(FILES "${SC_RUST_PRIM_DIR}/classes/RustExt.sc"
+			DESTINATION "share/SuperCollider/Extensions")
+	else()
+		message(STATUS
+			"sclang: Rust primitives — on ${CMAKE_SYSTEM_NAME}, copy "
+			"${SC_RUST_PRIM_DIR}/classes/RustExt.sc into Platform.systemExtensionDir "
+			"or .userExtensionDir to load the rust* methods")
+	endif()
 	message(STATUS "sclang: Rust primitives ENABLED (${SC_RUST_PRIM_LIB})")
 endif()
 

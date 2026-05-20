@@ -251,6 +251,85 @@ and rebuild. Compare with the other examples for arrays
 
 ---
 
+## Under the hood: the C++ way vs. this crate
+
+It's worth seeing *what a primitive actually does* and what writing one in plain
+C++ costs, because that's exactly the overhead this crate removes.
+
+**What a primitive is, mechanically.** It is a C function the interpreter calls
+with two things: a pointer to the VM (`g`) and the number of values the caller
+pushed. Those values sit on the interpreter's **operand stack** as 16-byte
+*tagged slots* (a type tag + 8 bytes of payload). The primitive must:
+
+1. find its arguments by doing pointer arithmetic on the stack pointer `g->sp`,
+2. check each slot's tag and pull out the raw value,
+3. do its work,
+4. if it produces an object, allocate it on the **GC heap** and cooperate with
+   the collector (write barriers, pausing collection — the two rules above),
+5. write a tagged result back into the receiver's stack slot,
+6. return an integer error code.
+
+Every one of those steps is manual in C++. Here is `factorize` — the same
+primitive we wrote above — done the idiomatic C++ way:
+
+```cpp
+int prFactorize(VMGlobals* g, int numArgsPushed) {
+    PyrSlot* self = g->sp;                       // (1) receiver = top of stack
+    if (NotInt(self)) return errWrongType;       // (2) manual tag check
+    int64 n = slotRawInt(self);                  //     manual extraction
+
+    std::vector<int> factors;                    // (3) the actual work
+    for (int64 d = 2; d * d <= n; ++d)
+        while (n % d == 0) { factors.push_back((int)d); n /= d; }
+    if (n > 1) factors.push_back((int)n);
+
+    // (4) build the result array, cooperating with the GC BY HAND:
+    g->gc->enterDelayedCollectionContext();           // pause collection (Rule 2)
+    PyrObject* arr = newPyrArray(g->gc, factors.size(), 0, true);  // alloc, get flags right
+    for (size_t i = 0; i < factors.size(); ++i) {
+        SetInt(arr->slots + i, factors[i]);           // manual tagging
+        g->gc->GCWrite(arr, arr->slots + i);          // manual write barrier (Rule 1)
+    }
+    arr->size = factors.size();                       // set the size by hand
+    g->gc->exitDelayedCollectionContext();            // resume collection
+    SetObject(self, arr);                             // (5) result into receiver slot
+    return errNone;                                   // (6) error code
+}
+```
+
+…plus, elsewhere, a hand-written `definePrimitive("_RustFactorize", prFactorize, 1, 0)`
+in an init function, and the `.sc` method. And note what is *not* on the page:
+
+- **No type help.** Forget a `NotInt`/`slotRawInt` mismatch and you read garbage.
+- **No safety net.** A C++ exception or a stray bug doesn't return an error — it
+  crashes the whole interpreter.
+- **Silent, delayed failure modes.** Forget the `GCWrite`, or get the
+  `enterDelayedCollectionContext` bracket wrong, and nothing fails *now* — you get
+  heap corruption that crashes minutes later, somewhere unrelated. These are the
+  bugs that make C++ primitives miserable to write and review.
+
+The Rust version (the walkthrough above) expresses the same six steps, but the
+error-prone ones are gone — folded into the types:
+
+| step | C++ primitive | this crate |
+|---|---|---|
+| read receiver | `g->sp` + `NotInt` + `slotRawInt` | `args.arg(0).as_int()?` |
+| wrong type | `return errWrongType;` | the `?` |
+| pause collection | `enter/exitDelayedCollectionContext()`, bracket by hand | the `&Gc` scope (RAII) |
+| allocate | `newPyrArray(gc, n, flags, true)` | `gc.new_array(n)?` |
+| set element | `SetInt(slot, v)` | `arr.set(i, Value::Int(v))` |
+| **write barrier** | `g->gc->GCWrite(arr, slot)` — *must not forget* | applied inside `set` |
+| set size | `arr->size = n` by hand | done by `finish()` |
+| return value | `SetObject(self, arr)` | `args.set_result(arr.finish())` |
+| a panic / exception | crashes the interpreter | caught → `errFailed` |
+| forgotten barrier / bad scope | heap corruption later | not expressible |
+
+The crate doesn't make the GC simpler — the rules are identical. It moves the two
+rules from "things you must remember every time, with crashes if you don't" to
+"things the API does for you, that you can't get wrong." That is the whole value.
+
+---
+
 ## Reading arguments and returning values
 
 `args.arg(i)` returns a `Slot` you can decode:
