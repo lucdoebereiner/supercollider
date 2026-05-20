@@ -4,5 +4,8 @@
 
 pub mod array;
 pub mod foreign_demo;
+#[cfg(feature = "http")]
+pub mod http;
 pub mod math;
+pub mod signal;
 pub mod string;

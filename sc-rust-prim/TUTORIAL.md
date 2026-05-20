@@ -1,0 +1,363 @@
+# Writing SuperCollider primitives in Rust — a tutorial
+
+This walks you through writing sclang **primitives** (the native `_Foo` functions
+behind methods) in Rust, using the `sc-prim` crate. No prior knowledge of
+SuperCollider's internals is assumed.
+
+- [What a primitive is](#what-a-primitive-is)
+- [How the garbage collector works (plain language)](#how-the-garbage-collector-works-plain-language)
+- [Anatomy of a primitive](#anatomy-of-a-primitive)
+- [Walkthrough: add your own primitive](#walkthrough-add-your-own-primitive)
+- [Reading arguments and returning values](#reading-arguments-and-returning-values)
+- [Allocating objects: arrays, strings, signals](#allocating-objects-arrays-strings-signals)
+- [Owning a Rust value from sclang (foreign objects)](#owning-a-rust-value-from-sclang-foreign-objects)
+- [Errors and panics](#errors-and-panics)
+- [Example: an HTTP request](#example-an-http-request)
+- [Testing and checking for leaks](#testing-and-checking-for-leaks)
+
+---
+
+## What a primitive is
+
+In sclang, most methods are written in SuperCollider itself, but the lowest-level
+ones call into native code. A method body that begins with `_SomeName` invokes a
+**primitive** — a native function registered under that name:
+
+```supercollider
+RustPrim {
+    *nthPrime { |n| _RustNthPrime; ^this.primitiveFailed }
+}
+```
+
+When you call `RustPrim.nthPrime(10)`, the interpreter pushes the receiver
+(`RustPrim`) and the argument (`10`) onto a stack and calls the native function
+registered as `_RustNthPrime`. If that function signals an error, the rest of the
+method runs — here `^this.primitiveFailed`, the conventional fallback.
+
+There are three kinds of primitive you will write, in increasing order of GC
+involvement:
+
+1. **Value functions** — take numbers/strings, return a number/bool. No
+   allocation, no GC. (e.g. `nthPrime`, `hypot`)
+2. **Object builders** — construct and return an Array, String, or Signal.
+   These touch the GC, but the crate handles it. (e.g. `primesUpTo`, `sineSignal`)
+3. **Foreign-object primitives** — attach a long-lived Rust value to an sclang
+   object. These use finalizers. (e.g. `RustCounter`)
+
+---
+
+## How the garbage collector works (plain language)
+
+You **never call `free`** on sclang objects (Arrays, Strings, Signals, class
+instances). SuperCollider has a **garbage collector (GC)**: a bookkeeper that
+automatically reclaims an object once nothing can reach it anymore — like a
+janitor who throws away whatever is no longer referenced.
+
+To avoid freezing the language/audio thread, the collector works **incrementally**
+— a little at a time — using the classic "tri-color" method. Picture every object
+wearing a colored hat:
+
+- **white** = "maybe garbage; not checked yet"
+- **grey** = "in use, but I haven't looked at what it points to yet"
+- **black** = "in use, and everything it points to is accounted for"
+
+The collector starts at the *roots* (the stack, global variables), paints them
+grey, then repeats: take a grey object, paint everything it references grey, then
+paint it black. When no grey objects remain, anything still white is unreachable
+and gets collected. Then it starts again.
+
+Two consequences of doing this *incrementally* are the **only two rules** a
+primitive must respect:
+
+### Rule 1 — the write barrier
+
+Because collection happens in steps, the object graph can change mid-sweep.
+Suppose the collector already finished an object (painted it **black**) and then
+your primitive stores a reference to a brand-new **white** object inside it. The
+collector considers the black object done and won't look at it again — so it
+never discovers the white object and collects it while it's still in use →
+crash.
+
+The fix is a **write barrier**: whenever you store an object reference *into*
+another object, you notify the GC "look again." In C++ you must remember to call
+`GCWrite` every single time; forget once and you get a rare, vicious corruption
+bug.
+
+> **In this crate you cannot forget it.** The only way to put an element into an
+> array is `ArrayBuilder::set`, which runs the barrier for you.
+
+### Rule 2 — don't let a fresh object die before it's anchored
+
+Allocating a new object can itself trigger a step of collection. If you create
+object A, then allocate object B (which triggers a sweep) while A is reachable
+*only* through a local Rust pointer the GC can't see, the GC may collect A out
+from under you.
+
+The fix is to pause collection while you build, then resume once your result is
+reachable from a root.
+
+> **In this crate that pause is the `Gc` value** the framework hands your
+> primitive. While it exists, collection is suspended; when your function
+> returns, it ends — and by then your result has been written to the stack,
+> which *is* a root, so the object is safe.
+
+That is the whole story. Both rules are about the **interpreter's** GC — not
+Rust's ownership and not C++'s `new`/`delete`. That's why simply switching to
+Rust wouldn't remove them, but a wrapper that bakes them in does.
+
+What the wrapper can't hide (rare): keeping an sclang object reference on the
+Rust side *after* the primitive returns, or a primitive that calls back into the
+interpreter mid-computation. Both need explicit "rooting" and are out of scope
+here.
+
+---
+
+## Anatomy of a primitive
+
+Every primitive is four small pieces:
+
+```rust
+// 1. a plain Rust function with a fixed shape
+fn nth_prime(args: &mut Args) -> Result<(), PrimError> {
+    let n = args.arg(1).as_int()?;                  // read argument 1
+    args.set_result(Value::Int(compute(n)));        // write the return value
+    Ok(())
+}
+
+// 2. one macro line: name it, give its arg count, generate the C wrapper
+sc_primitive!(NTH_PRIME, "_RustNthPrime", 2, nth_prime);
+```
+
+```rust
+// 3. register it (src/registry.rs)
+define(math::NTH_PRIME);
+```
+
+```supercollider
+// 4. expose it from a class (RustPrim.sc)
+*nthPrime { |n| _RustNthPrime; ^this.primitiveFailed }
+```
+
+`args.arg(0)` is always the receiver (`self`); `args.arg(1)` is the first real
+argument, and so on. The argument count in the macro (`2` above) counts the
+receiver too: `*nthPrime { |n| ... }` pushes the class plus `n` = 2 slots.
+
+Use `sc_primitive!` for value functions and `sc_primitive_gc!` for anything that
+allocates — the latter passes your function an extra `&Gc` argument:
+
+```rust
+fn primes_up_to(args: &mut Args, gc: &Gc) -> Result<(), PrimError> { ... }
+sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 2, primes_up_to);
+```
+
+---
+
+## Walkthrough: add your own primitive
+
+Let's add `RustPrim.clip(x, lo, hi)` — clamp a float.
+
+**1. Write the function** in `sc-prim/src/prims/math.rs`:
+
+```rust
+pub fn clip(args: &mut Args) -> Result<(), PrimError> {
+    let x  = args.arg(1).as_float()?;
+    let lo = args.arg(2).as_float()?;
+    let hi = args.arg(3).as_float()?;
+    args.set_result(Value::Float(x.clamp(lo, hi)));
+    Ok(())
+}
+sc_primitive!(CLIP, "_RustClip", 4, clip);   // receiver + 3 args = 4
+```
+
+**2. Register it** in `sc-prim/src/registry.rs`:
+
+```rust
+define(math::CLIP);
+```
+
+**3. Expose it** in `lang/LangPrimSource/RustPrim.sc`:
+
+```supercollider
+*clip { |x, lo, hi| _RustClip; ^this.primitiveFailed }
+```
+
+**4. Rebuild** the lib (`cargo build --release` in `sc-prim/`), rebuild sclang,
+and `RustPrim.clip(5, 0, 3)` returns `3.0`.
+
+That's it — no `unsafe`, no GC code, because `clip` only deals in values.
+
+---
+
+## Reading arguments and returning values
+
+`args.arg(i)` returns a `Slot` you can decode:
+
+| method | returns | on type mismatch |
+|---|---|---|
+| `.as_int()` | `i32` | `Err(WRONG_TYPE)` |
+| `.as_float()` | `f64` (ints coerced) | `Err(WRONG_TYPE)` |
+| `.as_str()` | `&str` (a String arg) | `Err(WRONG_TYPE)` |
+| `.as_f32_slice()` | `&[f32]` (a Signal) | `Err(WRONG_TYPE)` |
+| `.as_f64_vec()` | `Vec<f64>` (an Array of numbers) | `Err(WRONG_TYPE)` |
+| `.value()` | the `Value` enum | never |
+
+The `?` operator turns a mismatch into the right sclang error automatically.
+Return a value with `args.set_result(Value::...)`:
+
+```rust
+Value::Int(42) | Value::Float(1.5) | Value::Bool(true) | Value::Nil
+```
+
+---
+
+## Allocating objects: arrays, strings, signals
+
+Take a `&Gc` (via `sc_primitive_gc!`) and build through it. The `Gc` is the
+"collection paused" window from Rule 2; the builders apply the write barrier from
+Rule 1.
+
+```rust
+// Array of ints
+let mut arr = gc.new_array(items.len())?;
+for (i, v) in items.iter().enumerate() { arr.set(i, Value::Int(*v)); }
+args.set_result(arr.finish());
+
+// String
+args.set_result(gc.new_string("hello")?);
+
+// Signal (float array) — fill the slice directly
+let mut sig = gc.new_signal(n)?;
+for (i, s) in sig.as_mut_slice().iter_mut().enumerate() {
+    *s = (TAU * i as f32 / n as f32).sin();
+}
+args.set_result(sig.finish());
+```
+
+See `prims/array.rs` (`primesUpTo`, `histogram`) and `prims/signal.rs`
+(`sineSignal`, `rustNormalize`, `rustRms`) for complete examples.
+
+---
+
+## Owning a Rust value from sclang (foreign objects)
+
+Sometimes you want a *Rust* object — a file handle, a network connection, a big
+data structure — to live as long as an sclang object. Use `foreign::attach`: it
+boxes your value on the Rust heap, stashes the pointer in the sclang object, and
+installs a **finalizer** so the value's `Drop` runs when the sclang object is
+collected. You still never call `free`.
+
+```rust
+pub struct Counter { label: String, count: i64 }
+impl Drop for Counter {                              // ordinary Rust cleanup
+    fn drop(&mut self) { /* close files, etc. */ }
+}
+
+// `RustCounter("name")` -> attach a Counter to self
+pub fn counter_new(args: &mut Args) -> Result<(), PrimError> {
+    let obj = args.receiver_obj()?;
+    let label = args.arg(1).as_str().unwrap_or("counter").to_string();
+    unsafe { foreign::attach(args.vm(), obj, Counter { label, count: 0 }) };
+    args.set_result(Value::Obj(obj));
+    Ok(())
+}
+
+// borrow it
+pub fn counter_next(args: &mut Args) -> Result<(), PrimError> {
+    let obj = args.receiver_obj()?;
+    let n = unsafe { foreign::with_mut::<Counter, _>(obj, |c| { c.count += 1; c.count }) }
+        .ok_or(PrimError::FAILED)?;
+    args.set_result(Value::Int(n as i32));
+    Ok(())
+}
+
+// free it eagerly (optional; otherwise the finalizer does it at GC time)
+pub fn counter_free(args: &mut Args) -> Result<(), PrimError> {
+    unsafe { foreign::take::<Counter>(args.receiver_obj()?) }; // Drop runs here
+    args.set_result(Value::Nil);
+    Ok(())
+}
+```
+
+**Convention:** the sclang class must reserve its **first two instance variables**
+for the pointer and finalizer:
+
+```supercollider
+RustCounter {
+    var ptr;        // slot 0 — managed by the primitive
+    var finalizer;  // slot 1 — managed by the primitive
+    var <label;     // your fields after
+    ...
+}
+```
+
+`take` drops immediately and nils the pointer, so the finalizer becomes a no-op:
+no double free. The `no_double_free` test verifies this.
+
+---
+
+## Errors and panics
+
+Return `Err(PrimError::WRONG_TYPE)` (or `FAILED`, `OUT_OF_MEMORY`, …) and the
+interpreter runs the method's fallback. The `?` operator does this for you on a
+type mismatch.
+
+If your Rust code *panics*, the wrapper catches it at the FFI boundary, posts a
+message, and returns `errFailed` — a panic can never unwind into the C++
+interpreter and crash it.
+
+---
+
+## Example: an HTTP request
+
+Doing HTTP in a C++ primitive means sockets or linking curl. In Rust it's a
+crate. `prims/http.rs` (behind the `http` Cargo feature) is:
+
+```rust
+pub fn http_get(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
+    let url = args.arg(1).as_str()?;
+    let body = ureq::get(url).timeout(Duration::from_secs(10)).call()
+        .ok().and_then(|r| r.into_string().ok());
+    match body {
+        Some(s) => args.set_result(gc.new_string(&s)?),
+        None    => args.set_result(Value::Nil),
+    }
+    Ok(())
+}
+```
+
+Build it with `cargo build --release --features http`, then
+`RustPrim.httpGet("http://example.com")`.
+
+> **Caveat — blocking.** This call blocks the language thread until it completes
+> or times out; sclang is frozen meanwhile. Fine for scripting, not for live use.
+> A production version would run the request on a background thread (`std::thread`
+> or an async runtime) and deliver the result back to sclang asynchronously — for
+> example by storing it and signalling a registered callback / a polled flag.
+> That requires "rooting" the target object across the call, which is the one
+> area this crate intentionally leaves to you (see Rule notes above).
+
+---
+
+## Testing and checking for leaks
+
+Two layers, both run by `cargo test`:
+
+- **Behavior** — each primitive is driven through an in-process mock host
+  (`src/test_host.rs`) and its result checked (`src/tests.rs`).
+- **Memory safety** — a `LeakProbe` type increments a counter on creation and
+  decrements on `Drop`. The tests drive the foreign-object machinery thousands of
+  times and assert the live count returns to **zero** (no leak) and never goes
+  **negative** (no double free): `no_leak_on_explicit_free`,
+  `no_leak_on_finalizer_collection`, `no_double_free`.
+
+```sh
+cd sc-prim && cargo test          # behavior + leak tests
+./build.sh                        # also builds & runs the standalone C++ demo
+```
+
+For an extra check at the C boundary, the mock demo frees all its objects at
+exit, so it runs clean under valgrind:
+
+```sh
+valgrind --leak-check=full ./build/mock_demo
+```

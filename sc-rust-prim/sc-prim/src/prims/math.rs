@@ -1,7 +1,7 @@
-//! Pure value-in/value-out primitives. These never allocate and never touch the
-//! GC — the abstraction makes them read like ordinary Rust.
+//! Number primitives. The first two are pure value-in/value-out (no allocation,
+//! no GC). `factorize` returns an Array, so it takes a `&Gc` scope.
 
-use crate::{sc_primitive, Args, PrimError, Value};
+use crate::{sc_primitive, sc_primitive_gc, Args, Gc, PrimError, Value};
 
 fn is_prime(n: i64) -> bool {
     if n < 2 {
@@ -55,6 +55,32 @@ pub fn hypot(args: &mut Args) -> Result<(), PrimError> {
     Ok(())
 }
 sc_primitive!(HYPOT, "_RustHypot", 3, hypot);
+
+/// `RustPrim.factorize(n)` -> an Array of n's prime factors (with multiplicity).
+/// A "number in, Array out" example.
+pub fn factorize(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
+    let mut n = args.arg(1).as_int()? as i64;
+    let mut factors = Vec::new();
+    let mut d = 2;
+    while d * d <= n {
+        while n % d == 0 {
+            factors.push(d as i32);
+            n /= d;
+        }
+        d += 1;
+    }
+    if n > 1 {
+        factors.push(n as i32);
+    }
+
+    let mut arr = gc.new_array(factors.len())?;
+    for (i, f) in factors.iter().enumerate() {
+        arr.set(i, Value::Int(*f));
+    }
+    args.set_result(arr.finish());
+    Ok(())
+}
+sc_primitive_gc!(FACTORIZE, "_RustFactorize", 2, factorize);
 
 #[cfg(test)]
 mod unit {

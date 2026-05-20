@@ -14,8 +14,10 @@ use crate::host::{RawSlot, ScFinalizerFn, ScObj, ScPrimFn, ScVm, SlotUnion};
 struct TObj {
     size: i32,
     is_string: i32,
+    is_signal: i32,
     slots: Vec<RawSlot>, // for arrays (8-byte aligned)
     bytes: Vec<u8>,      // for strings
+    floats: Vec<f32>,    // for signals
 }
 
 thread_local! {
@@ -58,8 +60,10 @@ pub fn make_array(size: i32) -> *mut ScObj {
     new_obj(TObj {
         size,
         is_string: 0,
+        is_signal: 0,
         slots: vec![empty_slot(); size.max(0) as usize],
         bytes: Vec::new(),
+        floats: Vec::new(),
     })
 }
 
@@ -67,8 +71,21 @@ pub fn make_string(s: &str) -> *mut ScObj {
     new_obj(TObj {
         size: s.len() as i32,
         is_string: 1,
+        is_signal: 0,
         slots: Vec::new(),
         bytes: s.as_bytes().to_vec(),
+        floats: Vec::new(),
+    })
+}
+
+pub fn make_signal(samples: &[f32]) -> *mut ScObj {
+    new_obj(TObj {
+        size: samples.len() as i32,
+        is_string: 0,
+        is_signal: 1,
+        slots: Vec::new(),
+        bytes: Vec::new(),
+        floats: samples.to_vec(),
     })
 }
 
@@ -120,9 +137,33 @@ pub extern "C" fn sc_new_string(_g: *mut ScVm, bytes: *const u8, len: i32) -> *m
     new_obj(TObj {
         size: len,
         is_string: 1,
+        is_signal: 0,
         slots: Vec::new(),
         bytes: slice.to_vec(),
+        floats: Vec::new(),
     })
+}
+
+#[no_mangle]
+pub extern "C" fn sc_new_signal(_g: *mut ScVm, size: i32) -> *mut ScObj {
+    new_obj(TObj {
+        size,
+        is_string: 0,
+        is_signal: 1,
+        slots: Vec::new(),
+        bytes: Vec::new(),
+        floats: vec![0.0; size.max(0) as usize],
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn sc_obj_float_data(o: *mut ScObj) -> *mut f32 {
+    unsafe { (*(o as *mut TObj)).floats.as_mut_ptr() }
+}
+
+#[no_mangle]
+pub extern "C" fn sc_obj_is_signal(o: *mut ScObj) -> i32 {
+    unsafe { (*(o as *mut TObj)).is_signal }
 }
 
 #[no_mangle]

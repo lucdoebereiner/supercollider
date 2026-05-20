@@ -67,10 +67,13 @@ extern "C" {
     pub fn sc_stack_ptr(g: *mut ScVm) -> *mut RawSlot;
     pub fn sc_new_array(g: *mut ScVm, size: i32) -> *mut ScObj;
     pub fn sc_new_string(g: *mut ScVm, bytes: *const u8, len: i32) -> *mut ScObj;
+    pub fn sc_new_signal(g: *mut ScVm, size: i32) -> *mut ScObj;
     pub fn sc_obj_slots(o: *mut ScObj) -> *mut RawSlot;
     pub fn sc_obj_size(o: *mut ScObj) -> i32;
     pub fn sc_obj_set_size(o: *mut ScObj, n: i32);
     pub fn sc_obj_is_string(o: *mut ScObj) -> i32;
+    pub fn sc_obj_is_signal(o: *mut ScObj) -> i32;
+    pub fn sc_obj_float_data(o: *mut ScObj) -> *mut f32;
     pub fn sc_gc_write(g: *mut ScVm, parent: *mut ScObj, slot: *mut RawSlot);
     pub fn sc_gc_enter_delayed(g: *mut ScVm);
     pub fn sc_gc_exit_delayed(g: *mut ScVm);

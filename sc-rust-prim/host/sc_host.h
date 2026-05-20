@@ -61,12 +61,17 @@ ScSlot* sc_stack_ptr(ScVm* g);
 ScObj* sc_new_array(ScVm* g, int size);
 /* A `String` holding `len` bytes copied from `bytes`. */
 ScObj* sc_new_string(ScVm* g, const unsigned char* bytes, int len);
+/* A `Signal` of `size` 32-bit floats (a FloatArray subclass; for wavetables,
+ * envelopes, etc.). Caller fills the float data then sets size. */
+ScObj* sc_new_signal(ScVm* g, int size);
 
 /* --- object access ------------------------------------------------------- */
-ScSlot* sc_obj_slots(ScObj* o);       /* start of the element/data region    */
+ScSlot* sc_obj_slots(ScObj* o);       /* start of the slot/data region       */
 int     sc_obj_size(ScObj* o);
 void    sc_obj_set_size(ScObj* o, int n);
 int     sc_obj_is_string(ScObj* o);   /* 1 if the object is a String         */
+int     sc_obj_is_signal(ScObj* o);   /* 1 if a Signal/FloatArray            */
+float*  sc_obj_float_data(ScObj* o);  /* start of the float[] data           */
 
 /* --- garbage collector --------------------------------------------------- */
 /* Write barrier: call after storing a reference into `parent` at `slot`. */

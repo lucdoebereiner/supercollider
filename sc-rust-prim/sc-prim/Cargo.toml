@@ -10,6 +10,14 @@ license = "GPL-3.0-or-later"
 # lib (rlib) -> needed so `cargo test` can build a test harness
 crate-type = ["staticlib", "lib"]
 
+[features]
+# Optional: the HTTP GET example primitive (pulls in the `ureq` crate).
+# Off by default so the core build needs no network and no dependencies.
+http = ["dep:ureq"]
+
+[dependencies]
+ureq = { version = "2", optional = true }
+
 [profile.release]
 # Keep unwinding so catch_unwind in the primitive wrapper actually catches
 # panics instead of aborting the whole interpreter.

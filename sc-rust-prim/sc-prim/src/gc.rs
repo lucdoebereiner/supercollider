@@ -12,8 +12,8 @@ use std::marker::PhantomData;
 
 use crate::error::PrimError;
 use crate::host::{
-    sc_gc_enter_delayed, sc_gc_exit_delayed, sc_gc_write, sc_new_array, sc_new_string,
-    sc_obj_set_size, sc_obj_slots, ScObj, ScVm,
+    sc_gc_enter_delayed, sc_gc_exit_delayed, sc_gc_write, sc_new_array, sc_new_signal,
+    sc_new_string, sc_obj_float_data, sc_obj_set_size, sc_obj_slots, ScObj, ScVm,
 };
 use crate::slot::{write_value, Value};
 
@@ -60,6 +60,22 @@ impl Gc {
         }
         Ok(Value::Obj(obj))
     }
+
+    /// Allocate an empty `Signal` of `len` samples, ready to be filled.
+    pub fn new_signal(&self, len: usize) -> Result<SignalBuilder<'_>, PrimError> {
+        let obj = unsafe { sc_new_signal(self.g, len as i32) };
+        if obj.is_null() {
+            return Err(PrimError::OUT_OF_MEMORY);
+        }
+        unsafe { sc_obj_set_size(obj, len as i32) };
+        let data = unsafe { sc_obj_float_data(obj) };
+        Ok(SignalBuilder {
+            obj,
+            data,
+            len,
+            _pd: PhantomData,
+        })
+    }
 }
 
 impl Drop for Gc {
@@ -102,6 +118,44 @@ impl<'a> ArrayBuilder<'a> {
     }
 
     /// Finish building and yield the array as a [`Value`] to return.
+    pub fn finish(self) -> Value {
+        Value::Obj(self.obj)
+    }
+}
+
+/// A freshly allocated [`Signal`](https://doc.sccode.org/Classes/Signal.html)
+/// being filled in. Samples are plain `f32`s, so no write barrier is needed
+/// (floats are not object references).
+pub struct SignalBuilder<'a> {
+    obj: *mut ScObj,
+    data: *mut f32,
+    len: usize,
+    _pd: PhantomData<&'a Gc>,
+}
+
+impl<'a> SignalBuilder<'a> {
+    /// Number of samples.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Store sample `v` at index `i` (no-op if out of range).
+    pub fn set(&mut self, i: usize, v: f32) {
+        if i < self.len {
+            unsafe { *self.data.add(i) = v };
+        }
+    }
+
+    /// The samples as a mutable slice — fill it however you like.
+    pub fn as_mut_slice(&mut self) -> &mut [f32] {
+        unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
+    }
+
+    /// Finish building and yield the Signal as a [`Value`] to return.
     pub fn finish(self) -> Value {
         Value::Obj(self.obj)
     }

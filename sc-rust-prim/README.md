@@ -12,12 +12,27 @@ see `../RUST_PRIMITIVES.md` at the repo root.
 sc-rust-prim/
 ├── host/sc_host.h            # the thin C ABI everything agrees on
 ├── sc-prim/                  # the Rust crate (safe layer + example primitives)
-│   ├── src/{host,slot,args,gc,foreign,macros,error}.rs   # the binding layer
-│   └── src/prims/{math,array,string,foreign_demo}.rs     # example primitives
+│   ├── src/{host,slot,args,gc,foreign,macros,error}.rs        # the binding layer
+│   └── src/prims/{math,array,signal,string,foreign_demo,http}.rs  # example primitives
 ├── examples/mock_host/       # standalone C++ host: runs the prims WITHOUT sclang
 ├── integration/              # the REAL backend + .sc glue + how-to-wire-in guide
+├── TUTORIAL.md               # how to write your own primitive (+ GC explained)
 └── build.sh                  # cargo test + build + run the demo
 ```
+
+**New here? Read [`TUTORIAL.md`](TUTORIAL.md)** — a from-scratch guide with a
+plain-language explanation of SuperCollider's garbage collector.
+
+Example primitives, by category:
+
+| category | primitives |
+|---|---|
+| numbers | `nthPrime`, `hypot`, `factorize` (number → Array) |
+| arrays | `primesUpTo`, `histogram` |
+| signals (float arrays) | `sineSignal` (create), `rustNormalize`, `rustRms` (process) |
+| strings | `reverseString`, `shout` |
+| foreign objects | `RustCounter` (Rust value owned via `Drop` + finalizer) |
+| http (opt-in feature) | `httpGet` (pulls in the `ureq` crate) |
 
 ## Try it (no SuperCollider needed)
 

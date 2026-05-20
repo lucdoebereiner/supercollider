@@ -100,8 +100,11 @@ cp sc-rust-prim/integration/SCRustPrim.sc "$HOME/.local/share/SuperCollider/Exte
 ```
 
 ```supercollider
-RustPrim.nthPrime(10);            // 29
+RustPrim.nthPrime(10);            // 29       (number -> number)
+RustPrim.factorize(360);          // [2,2,2,3,3,5]  (number -> Array)
 RustPrim.primesUpTo(30);          // [ 2, 3, 5, 7, 11, 13, 17, 19, 23, 29 ]
+RustPrim.sineSignal(512).plot;    // one cycle of a sine, as a Signal
+Signal.sineFill(64, [1]).rustNormalize.rustRms;   // process a Signal
 RustPrim.reverseString("hello");  // "olleh"
 
 c = RustCounter("voices");
@@ -109,12 +112,21 @@ c.next; c.next; c.next;           // 1, 2, 3
 c.free;                           // [Rust Drop] Counter 'voices' freed at count 3
 ```
 
+The HTTP example needs the optional feature
+(`cargo build --release --features http`), then `RustPrim.httpGet("http://example.com")`.
+
 ---
+
+## Want to write your own primitive?
+
+See **`sc-rust-prim/TUTORIAL.md`** — a from-scratch guide including a plain-language
+explanation of SuperCollider's garbage collector and the two rules a primitive
+must follow.
 
 ## How the Rust side stays safe (summary)
 
-Full detail in `sc-rust-prim/README.md`. In short, a primitive is an ordinary
-Rust function:
+Full detail in `sc-rust-prim/README.md` and `sc-rust-prim/TUTORIAL.md`. In short,
+a primitive is an ordinary Rust function:
 
 ```rust
 fn primes_up_to(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
@@ -150,7 +162,8 @@ sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 2, primes_up_to);
 - **Not abstracted away:** holding an sclang object reference on the Rust side
   past a primitive call, and primitives that re-enter the interpreter — both
   would need explicit GC rooting.
-- **Status:** the Rust crate's `cargo test` (12 tests, incl. both `Drop` paths
-  and panic recovery) and a standalone mock host pass; `sc_rust_shim.cpp`
-  syntax-checks against these SC headers. A full end-to-end build inside sclang
-  has not yet been run on this machine.
+- **Status:** the Rust crate's `cargo test` (19 tests — every example plus three
+  memory-safety tests: no-leak-on-free, no-leak-on-finalizer, no-double-free) and
+  a standalone mock host pass; `sc_rust_shim.cpp` syntax-checks against these SC
+  headers; the `http` feature compiles. A full end-to-end build inside sclang has
+  not yet been run on this machine.

@@ -20,6 +20,7 @@
 #include "PyrKernel.h"
 #include "PyrObject.h"
 #include "PyrPrimitive.h"
+#include "PyrSignal.h"
 #include "SCBase.h"
 #include "VMGlobals.h"
 
@@ -59,13 +60,24 @@ ScObj* sc_new_string(ScVm* g, const unsigned char* bytes, int len) {
     return reinterpret_cast<ScObj*>(s);
 }
 
+ScObj* sc_new_signal(ScVm* g, int size) {
+    PyrObject* s = newPyrSignal(vm(g), size);
+    s->size = size;
+    return reinterpret_cast<ScObj*>(s);
+}
+
 // --- object access -------------------------------------------------------
-// PyrObject::slots and PyrString::s sit at the same offset (right after the
-// header), so one accessor serves both slot-arrays and byte-strings.
+// PyrObject::slots, PyrString::s and PyrFloatArray::f all sit at the same offset
+// (right after the header), so one base accessor serves slots, bytes and floats.
 ScSlot* sc_obj_slots(ScObj* o) { return reinterpret_cast<ScSlot*>(obj(o)->slots); }
+float* sc_obj_float_data(ScObj* o) { return reinterpret_cast<float*>(obj(o)->slots); }
 int sc_obj_size(ScObj* o) { return obj(o)->size; }
 void sc_obj_set_size(ScObj* o, int n) { obj(o)->size = n; }
 int sc_obj_is_string(ScObj* o) { return obj(o)->classptr == class_string ? 1 : 0; }
+int sc_obj_is_signal(ScObj* o) {
+    PyrClass* c = obj(o)->classptr;
+    return (c == class_signal || c == class_floatarray) ? 1 : 0;
+}
 
 // --- garbage collector ---------------------------------------------------
 void sc_gc_write(ScVm* g, ScObj* parent, ScSlot* slot) {

@@ -24,8 +24,10 @@ namespace {
 struct MockObj {
     int size = 0;
     int is_string = 0;
+    int is_signal = 0;
     std::vector<ScSlot> slots; // arrays (8-byte aligned)
     std::vector<unsigned char> bytes; // strings
+    std::vector<float> floats; // signals
 };
 
 struct PrimEntry {
@@ -82,6 +84,15 @@ ScObj* sc_new_string(ScVm* /*g*/, const unsigned char* bytes, int len) {
     return as_handle(o);
 }
 
+ScObj* sc_new_signal(ScVm* /*g*/, int size) {
+    auto* o = new MockObj();
+    o->size = size;
+    o->is_signal = 1;
+    o->floats.assign(size > 0 ? size : 0, 0.0f);
+    g_objs.push_back(o);
+    return as_handle(o);
+}
+
 ScSlot* sc_obj_slots(ScObj* o) {
     MockObj* m = as_mock(o);
     if (m->is_string)
@@ -89,9 +100,12 @@ ScSlot* sc_obj_slots(ScObj* o) {
     return m->slots.data();
 }
 
+float* sc_obj_float_data(ScObj* o) { return as_mock(o)->floats.data(); }
+
 int sc_obj_size(ScObj* o) { return as_mock(o)->size; }
 void sc_obj_set_size(ScObj* o, int n) { as_mock(o)->size = n; }
 int sc_obj_is_string(ScObj* o) { return as_mock(o)->is_string; }
+int sc_obj_is_signal(ScObj* o) { return as_mock(o)->is_signal; }
 
 void sc_gc_write(ScVm*, ScObj*, ScSlot*) {} // no-op: mock has no incremental GC
 void sc_gc_enter_delayed(ScVm*) {}
@@ -147,6 +161,14 @@ void print_string(const char* label, ScSlot r) {
     printf("%s\"%.*s\"\n", label, o->size, reinterpret_cast<char*>(o->bytes.data()));
 }
 
+void print_signal(const char* label, ScSlot r) {
+    MockObj* o = as_mock(reinterpret_cast<ScObj*>(r.u.ptr));
+    printf("%s[", label);
+    for (int i = 0; i < o->size; ++i)
+        printf("%s%.3f", i ? ", " : "", o->floats[i]);
+    printf("]\n");
+}
+
 } // namespace
 
 int main() {
@@ -165,6 +187,20 @@ int main() {
     for (int i = 0; i < 6; ++i)
         sc_obj_slots(data)[i] = s_float(vals[i]);
     print_int_array("histogram(.., 3) -> ", call("_RustHistogram", { s_nil(), s_obj(data), s_int(3) }));
+
+    printf("\n== signals (float arrays) ==\n");
+    print_signal("sineSignal(8)  -> ", call("_RustSineSignal", { s_nil(), s_int(8) }));
+    ScObj* sig = sc_new_signal(nullptr, 4);
+    float samp[4] = { 0.0f, 0.25f, -0.5f, 0.1f };
+    for (int i = 0; i < 4; ++i)
+        sc_obj_float_data(sig)[i] = samp[i];
+    print_signal("normalize(..) -> ", call("_RustNormalizeSignal", { s_obj(sig) }));
+    printf("rms([1,-1,1,-1]) -> %g\n", call("_RustSignalRms",
+        { s_obj([] { ScObj* s = sc_new_signal(nullptr, 4);
+            float v[4] = {1,-1,1,-1}; for (int i=0;i<4;++i) sc_obj_float_data(s)[i]=v[i]; return s; }()) }).u.f);
+
+    printf("\n== numbers -> array ==\n");
+    print_int_array("factorize(360) -> ", call("_RustFactorize", { s_nil(), s_int(360) }));
 
     printf("\n== strings ==\n");
     print_string("reverse(\"hello\") -> ", call("_RustReverseString", { s_nil(), s_obj(sc_new_string(nullptr, (const unsigned char*)"hello", 5)) }));
@@ -188,5 +224,11 @@ int main() {
         f.fn(reinterpret_cast<ScVm*>(&g_vm), f.obj);
 
     printf("\nDone.\n");
+
+    // Free every mock object so a leak checker (valgrind) sees a clean exit.
+    // The Rust-owned Counters were already dropped above (free + finalizer).
+    for (MockObj* o : g_objs)
+        delete o;
+    g_objs.clear();
     return 0;
 }

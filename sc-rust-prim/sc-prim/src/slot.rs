@@ -8,7 +8,9 @@ use std::marker::PhantomData;
 
 use crate::error::PrimError;
 use crate::host::tags::*;
-use crate::host::{sc_obj_is_string, sc_obj_size, sc_obj_slots, RawSlot, ScObj};
+use crate::host::{
+    sc_obj_float_data, sc_obj_is_signal, sc_obj_is_string, sc_obj_size, sc_obj_slots, RawSlot, ScObj,
+};
 
 /// A decoded sclang value.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -168,5 +170,18 @@ impl<'a> Slot<'a> {
                 _ => 0.0,
             })
             .collect())
+    }
+
+    /// Borrow the samples of a `Signal`/`FloatArray` argument as `&[f32]`.
+    /// Errors unless the slot holds a Signal (or FloatArray) object.
+    pub fn as_f32_slice(&self) -> Result<&'a [f32], PrimError> {
+        let o = self.as_obj()?;
+        unsafe {
+            if sc_obj_is_signal(o) == 0 {
+                return Err(PrimError::WRONG_TYPE);
+            }
+            let len = sc_obj_size(o).max(0) as usize;
+            Ok(std::slice::from_raw_parts(sc_obj_float_data(o), len))
+        }
     }
 }
