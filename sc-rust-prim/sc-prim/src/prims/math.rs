@@ -35,9 +35,10 @@ fn nth_prime_value(n: i64) -> Option<i64> {
     }
 }
 
-/// `RustPrim.nthPrime(n)` -> the nth prime, or `nil` for n < 1.
+/// `anInteger.rustNthPrime` -> the nth prime, or `nil` for n < 1.
+/// Receiver is the index (instance method on Integer).
 pub fn nth_prime(args: &mut Args) -> Result<(), PrimError> {
-    let n = args.arg(1).as_int()? as i64;
+    let n = args.arg(0).as_int()? as i64;
     let result = match nth_prime_value(n) {
         Some(p) => Value::Int(p as i32),
         None => Value::Nil,
@@ -45,21 +46,22 @@ pub fn nth_prime(args: &mut Args) -> Result<(), PrimError> {
     args.set_result(result);
     Ok(())
 }
-sc_primitive!(NTH_PRIME, "_RustNthPrime", 2, nth_prime);
+sc_primitive!(NTH_PRIME, "_RustNthPrime", 1, nth_prime);
 
-/// `RustPrim.hypot(a, b)` -> sqrt(a^2 + b^2). Accepts ints or floats.
+/// `a.rustHypot(b)` -> sqrt(a^2 + b^2). Accepts ints or floats.
+/// Receiver is `a` (instance method on SimpleNumber).
 pub fn hypot(args: &mut Args) -> Result<(), PrimError> {
-    let a = args.arg(1).as_float()?;
-    let b = args.arg(2).as_float()?;
+    let a = args.arg(0).as_float()?;
+    let b = args.arg(1).as_float()?;
     args.set_result(Value::Float(a.hypot(b)));
     Ok(())
 }
-sc_primitive!(HYPOT, "_RustHypot", 3, hypot);
+sc_primitive!(HYPOT, "_RustHypot", 2, hypot);
 
-/// `RustPrim.factorize(n)` -> an Array of n's prime factors (with multiplicity).
-/// A "number in, Array out" example.
+/// `anInteger.rustFactorize` -> an Array of n's prime factors (with multiplicity).
+/// A "number in, Array out" example; receiver is the number.
 pub fn factorize(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
-    let mut n = args.arg(1).as_int()? as i64;
+    let mut n = args.arg(0).as_int()? as i64;
     let mut factors = Vec::new();
     let mut d = 2;
     while d * d <= n {
@@ -80,7 +82,7 @@ pub fn factorize(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
     args.set_result(arr.finish());
     Ok(())
 }
-sc_primitive_gc!(FACTORIZE, "_RustFactorize", 2, factorize);
+sc_primitive_gc!(FACTORIZE, "_RustFactorize", 1, factorize);
 
 #[cfg(test)]
 mod unit {

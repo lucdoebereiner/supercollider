@@ -4,9 +4,9 @@
 
 use crate::{sc_primitive_gc, Args, Gc, PrimError, Value};
 
-/// `RustPrim.primesUpTo(n)` -> an `Array` of all primes <= n.
+/// `anInteger.rustPrimesUpTo` -> an `Array` of all primes <= n (receiver = n).
 pub fn primes_up_to(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
-    let n = args.arg(1).as_int()?.max(0) as usize;
+    let n = args.arg(0).as_int()?.max(0) as usize;
 
     // Plain Rust: a sieve, no interpreter awareness at all.
     let mut sieve = vec![true; n + 1];
@@ -32,13 +32,13 @@ pub fn primes_up_to(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
     args.set_result(arr.finish());
     Ok(())
 }
-sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 2, primes_up_to);
+sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 1, primes_up_to);
 
-/// `RustPrim.histogram(data, nbins)` -> an `Array` of bin counts.
-/// `data` is any Array of numbers.
+/// `anArray.rustHistogram(nbins)` -> an `Array` of bin counts.
+/// Receiver is the data (any Array of numbers).
 pub fn histogram(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
-    let data = args.arg(1).as_f64_vec()?;
-    let nbins = args.arg(2).as_int()?.max(1) as usize;
+    let data = args.arg(0).as_f64_vec()?;
+    let nbins = args.arg(1).as_int()?.max(1) as usize;
 
     let mut counts = vec![0i32; nbins];
     if !data.is_empty() {
@@ -61,4 +61,4 @@ pub fn histogram(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
     args.set_result(arr.finish());
     Ok(())
 }
-sc_primitive_gc!(HISTOGRAM, "_RustHistogram", 3, histogram);
+sc_primitive_gc!(HISTOGRAM, "_RustHistogram", 2, histogram);

@@ -227,6 +227,10 @@ if(SC_RUST_PRIMITIVES)
 	if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 		target_link_libraries(libsclang pthread dl m)
 	endif()
+	# Install the class extensions (the rust* methods) so the installed sclang
+	# loads them. Kept out of SCClassLibrary so non-feature builds stay clean.
+	install(FILES "${SC_RUST_PRIM_DIR}/classes/RustExt.sc"
+		DESTINATION "share/SuperCollider/Extensions")
 	message(STATUS "sclang: Rust primitives ENABLED (${SC_RUST_PRIM_LIB})")
 endif()
 

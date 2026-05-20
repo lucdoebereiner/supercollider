@@ -29,17 +29,20 @@ walkthrough of a real primitive.
 All live in [`sc-prim/src/prims/`](sc-prim/src/prims/). Open them — each is a
 plain Rust function plus one `sc_primitive!`/`sc_primitive_gc!` line:
 
-| category | primitives | source |
+Each is hung on the natural receiver type as a `rust*` method (the prefix avoids
+clashing with existing methods like `hypot`/`reverse`/`normalize`):
+
+| category | sclang | source |
 |---|---|---|
-| numbers | `nthPrime`, `hypot`, `factorize` (number → Array) | [`prims/math.rs`](sc-prim/src/prims/math.rs) |
-| arrays | `primesUpTo`, `histogram` | [`prims/array.rs`](sc-prim/src/prims/array.rs) |
-| signals (float arrays) | `sineSignal` (create), `rustNormalize`, `rustRms` (process) | [`prims/signal.rs`](sc-prim/src/prims/signal.rs) |
-| strings | `reverseString`, `shout` | [`prims/string.rs`](sc-prim/src/prims/string.rs) |
-| foreign objects | `RustCounter` (Rust value owned via `Drop` + finalizer) | [`prims/foreign_demo.rs`](sc-prim/src/prims/foreign_demo.rs) |
-| http (opt-in feature) | `httpGet` (pulls in the `ureq` crate) | [`prims/http.rs`](sc-prim/src/prims/http.rs) |
+| numbers | `10.rustNthPrime`, `3.rustHypot(4)`, `360.rustFactorize` | [`prims/math.rs`](sc-prim/src/prims/math.rs) |
+| arrays | `30.rustPrimesUpTo`, `data.rustHistogram(8)` | [`prims/array.rs`](sc-prim/src/prims/array.rs) |
+| signals (float arrays) | `Signal.rustSine(n)`, `sig.rustNormalize`, `sig.rustRms` | [`prims/signal.rs`](sc-prim/src/prims/signal.rs) |
+| strings | `"abc".rustReverse`, `"hi".rustShout` | [`prims/string.rs`](sc-prim/src/prims/string.rs) |
+| foreign objects | `RustCounter("name")` (Rust value owned via `Drop` + finalizer) | [`prims/foreign_demo.rs`](sc-prim/src/prims/foreign_demo.rs) |
+| http (opt-in feature) | `url.rustHttpGet` (pulls in the `ureq` crate) | [`prims/http.rs`](sc-prim/src/prims/http.rs) |
 
 They are registered in [`sc-prim/src/registry.rs`](sc-prim/src/registry.rs) and
-exposed to sclang by [`integration/SCRustPrim.sc`](integration/SCRustPrim.sc).
+exposed to sclang by [`classes/RustExt.sc`](classes/RustExt.sc) (class extensions).
 
 ## Try it (no SuperCollider needed)
 
@@ -51,9 +54,9 @@ You should see all the primitives run against the mock host, including a Rust
 object whose `Drop` fires both on explicit `.free` and at simulated GC time:
 
 ```
-nthPrime(10)   -> 29
-primesUpTo(30) -> [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
-reverse("hello") -> "olleh"
+10.rustNthPrime  -> 29
+30.rustPrimesUpTo -> [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
+"hello".rustReverse -> "olleh"
   [Rust Drop] Counter 'c1' freed at count 2
   [Rust Drop] Counter 'c2' freed at count 1
 ```
@@ -103,8 +106,10 @@ implementations:
   real `PyrSlot`/`PyrObject`/GC. It is the *only* file that includes SC headers,
   so SC version drift is contained to one place.
 
-To run inside a real `sclang`, follow **`integration/README.md`** (three small
-edits to the SC build + dropping `SCRustPrim.sc` into your extensions dir).
+To run inside a real `sclang`, follow **`integration/README.md`** (these edits
+are already applied on the `rust-primitives` branch; see `../RUST_PRIMITIVES.md`).
+With `SC_RUST_PRIMITIVES=ON` the build also installs `classes/RustExt.sc` into the
+Extensions dir.
 
 ## Status & limits
 

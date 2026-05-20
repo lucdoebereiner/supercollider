@@ -64,41 +64,43 @@ fn read_string(o: *mut ScObj) -> String {
 
 #[test]
 fn nth_prime_returns_int() {
-    let r = call(math::NTH_PRIME, vec![nil(), islot(10)]);
+    // receiver is the integer (10.rustNthPrime)
+    let r = call(math::NTH_PRIME, vec![islot(10)]);
     assert_eq!(r.tag, TAG_INT);
     assert_eq!(unsafe { r.u.i }, 29);
 }
 
 #[test]
 fn nth_prime_zero_is_nil() {
-    let r = call(math::NTH_PRIME, vec![nil(), islot(0)]);
+    let r = call(math::NTH_PRIME, vec![islot(0)]);
     assert_eq!(r.tag, TAG_NIL);
 }
 
 #[test]
 fn hypot_returns_float() {
-    let r = call(math::HYPOT, vec![nil(), fslot(3.0), fslot(4.0)]);
+    // receiver is a, arg is b (3.rustHypot(4))
+    let r = call(math::HYPOT, vec![fslot(3.0), fslot(4.0)]);
     assert_eq!(r.tag, TAG_FLOAT);
     assert!((unsafe { r.u.f } - 5.0).abs() < 1e-12);
 }
 
 #[test]
 fn hypot_accepts_ints() {
-    let r = call(math::HYPOT, vec![nil(), islot(3), islot(4)]);
+    let r = call(math::HYPOT, vec![islot(3), islot(4)]);
     assert!((unsafe { r.u.f } - 5.0).abs() < 1e-12);
 }
 
 #[test]
 fn wrong_type_is_reported() {
     // hypot on nil should fail with errWrongType, not panic.
-    test_host::set_stack(vec![nil(), nil(), nil()]);
-    let err = (math::HYPOT.func)(test_host::vm_ptr(), 3);
+    test_host::set_stack(vec![nil(), nil()]);
+    let err = (math::HYPOT.func)(test_host::vm_ptr(), 2);
     assert_eq!(err, crate::host::errors::ERR_WRONG_TYPE);
 }
 
 #[test]
 fn primes_up_to_builds_array() {
-    let r = call(array::PRIMES_UP_TO, vec![nil(), islot(10)]);
+    let r = call(array::PRIMES_UP_TO, vec![islot(10)]);
     assert_eq!(read_ints(obj_of(r)), vec![2, 3, 5, 7]);
 }
 
@@ -112,7 +114,7 @@ fn histogram_bins() {
         *s.add(2) = fslot(0.9);
         *s.add(3) = fslot(1.0);
     }
-    let r = call(array::HISTOGRAM, vec![nil(), oslot(data), islot(2)]);
+    let r = call(array::HISTOGRAM, vec![oslot(data), islot(2)]); // receiver = data
     // two low, two high
     assert_eq!(read_ints(obj_of(r)), vec![2, 2]);
 }
@@ -120,14 +122,14 @@ fn histogram_bins() {
 #[test]
 fn reverse_string() {
     let s = test_host::make_string("hello");
-    let r = call(string::REVERSE, vec![nil(), oslot(s)]);
+    let r = call(string::REVERSE, vec![oslot(s)]); // receiver = the string
     assert_eq!(read_string(obj_of(r)), "olleh");
 }
 
 #[test]
 fn shout_string() {
     let s = test_host::make_string("hi");
-    let r = call(string::SHOUT, vec![nil(), oslot(s)]);
+    let r = call(string::SHOUT, vec![oslot(s)]);
     assert_eq!(read_string(obj_of(r)), "HI!");
 }
 
@@ -211,7 +213,7 @@ fn rms_of_signal() {
 
 #[test]
 fn factorize_number() {
-    let r = call(math::FACTORIZE, vec![nil(), islot(360)]);
+    let r = call(math::FACTORIZE, vec![islot(360)]); // receiver = 360
     assert_eq!(read_ints(obj_of(r)), vec![2, 2, 2, 3, 3, 5]); // 360 = 2^3 * 3^2 * 5
 }
 

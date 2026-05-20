@@ -13,9 +13,10 @@
 
 use crate::{sc_primitive_gc, Args, Gc, PrimError, Value};
 
-/// `RustPrim.httpGet(url)` -> the response body as a String, or `nil` on error.
+/// `aString.rustHttpGet` -> the response body as a String, or `nil` on error.
+/// Receiver is the URL string.
 pub fn http_get(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
-    let url = args.arg(1).as_str()?;
+    let url = args.arg(0).as_str()?;
     let result = ureq::get(url)
         .timeout(std::time::Duration::from_secs(10))
         .call()
@@ -28,4 +29,4 @@ pub fn http_get(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
     }
     Ok(())
 }
-sc_primitive_gc!(HTTP_GET, "_RustHttpGet", 2, http_get);
+sc_primitive_gc!(HTTP_GET, "_RustHttpGet", 1, http_get);

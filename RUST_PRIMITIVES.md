@@ -28,14 +28,21 @@ scopes, and finalizer installation (`InstallFinalizer`). It also forwards
 primitive registration to `definePrimitive`. Compiled only when
 `SC_RUST_PRIMITIVES=ON`.
 
-### 2. New file — `lang/LangPrimSource/RustPrim.sc` (reference class library)
+### 2. Class extensions — `sc-rust-prim/classes/RustExt.sc`
 
-The sclang classes (`RustPrim`, `RustCounter`) whose methods call the Rust
-primitives. This file is **not** auto-compiled (kept out of `SCClassLibrary` so
-default builds emit no "primitive not found" warnings). To use it, copy it into
-your user extensions directory — see *Run* below.
+The sclang glue. Rather than a wrapper class, the example primitives are hung on
+the natural receiver types as `rust*` methods — `+ Integer { rustNthPrime ... }`,
+`+ String { rustReverse ... }`, `+ Signal { ... }`, etc. — plus a `RustCounter`
+class for the foreign-object example. The `rust` prefix avoids clashing with
+existing methods (`hypot`, `reverse`, `normalize` already exist).
 
-### 3. `lang/CMakeLists.txt` — option + link
+This file lives in the self-contained `sc-rust-prim/` project and is kept out of
+`SCClassLibrary` (so non-feature builds emit no "primitive not found" warnings).
+When `SC_RUST_PRIMITIVES=ON`, the build **installs** it to
+`share/SuperCollider/Extensions` (step 3); for run-from-build-tree use, copy it
+into your user extensions dir.
+
+### 3. `lang/CMakeLists.txt` — option + link + install
 
 Two blocks added:
 
@@ -93,19 +100,25 @@ cmake --build build --target sclang -j
 
 ## Run
 
+`cmake --install` puts `RustExt.sc` in the Extensions dir for you. If you run
+from the build tree instead, copy it once:
+
 ```sh
-# make the classes available
-cp sc-rust-prim/integration/SCRustPrim.sc "$HOME/.local/share/SuperCollider/Extensions/"
+cp sc-rust-prim/classes/RustExt.sc "$HOME/.local/share/SuperCollider/Extensions/"
 # (or wherever Platform.userExtensionDir points)
 ```
 
+The example primitives are `rust*` methods on the natural types:
+
 ```supercollider
-RustPrim.nthPrime(10);            // 29       (number -> number)
-RustPrim.factorize(360);          // [2,2,2,3,3,5]  (number -> Array)
-RustPrim.primesUpTo(30);          // [ 2, 3, 5, 7, 11, 13, 17, 19, 23, 29 ]
-RustPrim.sineSignal(512).plot;    // one cycle of a sine, as a Signal
+10.rustNthPrime;                  // 29       (number -> number)
+360.rustFactorize;                // [2,2,2,3,3,5]  (number -> Array)
+30.rustPrimesUpTo;                // [ 2, 3, 5, 7, 11, 13, 17, 19, 23, 29 ]
+3.rustHypot(4);                   // 5.0
+[0, 0.1, 0.9, 1].rustHistogram(2);
+Signal.rustSine(512).plot;        // create a Signal (class method)
 Signal.sineFill(64, [1]).rustNormalize.rustRms;   // process a Signal
-RustPrim.reverseString("hello");  // "olleh"
+"hello".rustReverse;              // "olleh"
 
 c = RustCounter("voices");
 c.next; c.next; c.next;           // 1, 2, 3
@@ -113,7 +126,7 @@ c.free;                           // [Rust Drop] Counter 'voices' freed at count
 ```
 
 The HTTP example needs the optional feature
-(`cargo build --release --features http`), then `RustPrim.httpGet("http://example.com")`.
+(`cargo build --release --features http`), then `"http://example.com".rustHttpGet`.
 
 ---
 

@@ -175,36 +175,38 @@ int main() {
     sc_rust_register_all();
     printf("Registered %zu Rust primitives.\n\n", g_prims.size());
 
+    // Most prims are instance methods now, so the receiver IS the input (no leading nil).
     printf("== value primitives ==\n");
-    printf("nthPrime(10)   -> %lld\n", static_cast<long long>(call("_RustNthPrime", { s_nil(), s_int(10) }).u.i));
-    printf("hypot(3, 4)    -> %g\n", call("_RustHypot", { s_nil(), s_int(3), s_int(4) }).u.f);
+    printf("10.rustNthPrime  -> %lld\n", static_cast<long long>(call("_RustNthPrime", { s_int(10) }).u.i));
+    printf("3.rustHypot(4)   -> %g\n", call("_RustHypot", { s_int(3), s_int(4) }).u.f);
 
     printf("\n== object builders ==\n");
-    print_int_array("primesUpTo(30) -> ", call("_RustPrimesUpTo", { s_nil(), s_int(30) }));
+    print_int_array("30.rustPrimesUpTo -> ", call("_RustPrimesUpTo", { s_int(30) }));
 
     ScObj* data = sc_new_array(nullptr, 6);
     double vals[6] = { 0.0, 0.05, 0.2, 0.8, 0.95, 1.0 };
     for (int i = 0; i < 6; ++i)
         sc_obj_slots(data)[i] = s_float(vals[i]);
-    print_int_array("histogram(.., 3) -> ", call("_RustHistogram", { s_nil(), s_obj(data), s_int(3) }));
+    print_int_array("data.rustHistogram(3) -> ", call("_RustHistogram", { s_obj(data), s_int(3) }));
 
     printf("\n== signals (float arrays) ==\n");
-    print_signal("sineSignal(8)  -> ", call("_RustSineSignal", { s_nil(), s_int(8) }));
+    // Signal.rustSine is a CLASS method: receiver is the class (placeholder), size is the arg.
+    print_signal("Signal.rustSine(8) -> ", call("_RustSineSignal", { s_nil(), s_int(8) }));
     ScObj* sig = sc_new_signal(nullptr, 4);
     float samp[4] = { 0.0f, 0.25f, -0.5f, 0.1f };
     for (int i = 0; i < 4; ++i)
         sc_obj_float_data(sig)[i] = samp[i];
-    print_signal("normalize(..) -> ", call("_RustNormalizeSignal", { s_obj(sig) }));
-    printf("rms([1,-1,1,-1]) -> %g\n", call("_RustSignalRms",
+    print_signal("sig.rustNormalize -> ", call("_RustNormalizeSignal", { s_obj(sig) }));
+    printf("sig.rustRms -> %g\n", call("_RustSignalRms",
         { s_obj([] { ScObj* s = sc_new_signal(nullptr, 4);
             float v[4] = {1,-1,1,-1}; for (int i=0;i<4;++i) sc_obj_float_data(s)[i]=v[i]; return s; }()) }).u.f);
 
     printf("\n== numbers -> array ==\n");
-    print_int_array("factorize(360) -> ", call("_RustFactorize", { s_nil(), s_int(360) }));
+    print_int_array("360.rustFactorize -> ", call("_RustFactorize", { s_int(360) }));
 
     printf("\n== strings ==\n");
-    print_string("reverse(\"hello\") -> ", call("_RustReverseString", { s_nil(), s_obj(sc_new_string(nullptr, (const unsigned char*)"hello", 5)) }));
-    print_string("shout(\"hi there\") -> ", call("_RustShout", { s_nil(), s_obj(sc_new_string(nullptr, (const unsigned char*)"hi there", 8)) }));
+    print_string("\"hello\".rustReverse -> ", call("_RustReverseString", { s_obj(sc_new_string(nullptr, (const unsigned char*)"hello", 5)) }));
+    print_string("\"hi there\".rustShout -> ", call("_RustShout", { s_obj(sc_new_string(nullptr, (const unsigned char*)"hi there", 8)) }));
 
     printf("\n== foreign object (Rust value owned by an sclang object) ==\n");
     // Path A: explicit free -> Drop runs immediately.

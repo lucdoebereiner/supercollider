@@ -61,24 +61,26 @@ extern "C" void sc_rust_register_all();   // from libsc_prim.a
 sc_rust_register_all();
 ```
 
-## 4. Install the class library
+## 4. Install the class extensions
 
-Copy `SCRustPrim.sc` into your user extensions directory:
+`cmake --install` (with `SC_RUST_PRIMITIVES=ON`) copies `classes/RustExt.sc` into
+`share/SuperCollider/Extensions` for you. If you run from the build tree instead,
+copy it once into your user extensions dir:
 
 ```sh
-cp SCRustPrim.sc "$(sclang -d ... )"   # or just into Platform.userExtensionDir
+cp ../classes/RustExt.sc "$(echo ~)/.local/share/SuperCollider/Extensions/"
 ```
 
 Rebuild sclang, recompile the class library, and:
 
 ```supercollider
-RustPrim.nthPrime(10);     // 29
-RustPrim.primesUpTo(30);   // [ 2, 3, 5, 7, 11, 13, 17, 19, 23, 29 ]
-RustPrim.reverseString("hello"); // "olleh"
+10.rustNthPrime;            // 29
+30.rustPrimesUpTo;          // [ 2, 3, 5, 7, 11, 13, 17, 19, 23, 29 ]
+"hello".rustReverse;        // "olleh"
 
 c = RustCounter("voices");
-c.next; c.next; c.next;    // 1, 2, 3
-c.free;                    // [Rust Drop] Counter 'voices' freed at count 3
+c.next; c.next; c.next;     // 1, 2, 3
+c.free;                     // [Rust Drop] Counter 'voices' freed at count 3
 ```
 
 ## Notes / caveats

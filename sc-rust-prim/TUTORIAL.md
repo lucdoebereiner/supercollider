@@ -24,23 +24,29 @@ ones call into native code. A method body that begins with `_SomeName` invokes a
 **primitive** — a native function registered under that name:
 
 ```supercollider
-RustPrim {
-    *nthPrime { |n| _RustNthPrime; ^this.primitiveFailed }
++ Integer {
+    rustNthPrime { _RustNthPrime; ^this.primitiveFailed }
 }
 ```
 
-When you call `RustPrim.nthPrime(10)`, the interpreter pushes the receiver
-(`RustPrim`) and the argument (`10`) onto a stack and calls the native function
-registered as `_RustNthPrime`. If that function signals an error, the rest of the
-method runs — here `^this.primitiveFailed`, the conventional fallback.
+When you call `10.rustNthPrime`, the interpreter pushes the receiver (`10`) onto
+a stack and calls the native function registered as `_RustNthPrime`. If that
+function signals an error, the rest of the method runs — here
+`^this.primitiveFailed`, the conventional fallback.
+
+A primitive acts on its **receiver** (`self`) plus any arguments, so the natural
+design is to hang each method on the type it operates on (`+ Integer`, `+ String`,
+`+ Signal`, …) — exactly how SC's own primitives work (`abs { _Abs; … }` on
+`SimpleNumber`). The examples here use a `rust` prefix so they don't clash with
+existing methods (`hypot`, `reverse`, `normalize` all already exist).
 
 There are three kinds of primitive you will write, in increasing order of GC
 involvement:
 
 1. **Value functions** — take numbers/strings, return a number/bool. No
-   allocation, no GC. (e.g. `nthPrime`, `hypot`)
+   allocation, no GC. (e.g. `rustNthPrime`, `rustHypot`)
 2. **Object builders** — construct and return an Array, String, or Signal.
-   These touch the GC, but the crate handles it. (e.g. `primesUpTo`, `sineSignal`)
+   These touch the GC, but the crate handles it. (e.g. `rustPrimesUpTo`, `rustSine`)
 3. **Foreign-object primitives** — attach a long-lived Rust value to an sclang
    object. These use finalizers. (e.g. `RustCounter`)
 
@@ -119,13 +125,13 @@ Every primitive is four small pieces:
 ```rust
 // 1. a plain Rust function with a fixed shape
 fn nth_prime(args: &mut Args) -> Result<(), PrimError> {
-    let n = args.arg(1).as_int()?;                  // read argument 1
+    let n = args.arg(0).as_int()?;                  // arg(0) = the receiver (10)
     args.set_result(Value::Int(compute(n)));        // write the return value
     Ok(())
 }
 
 // 2. one macro line: name it, give its arg count, generate the C wrapper
-sc_primitive!(NTH_PRIME, "_RustNthPrime", 2, nth_prime);
+sc_primitive!(NTH_PRIME, "_RustNthPrime", 1, nth_prime);  // 1 = just the receiver
 ```
 
 ```rust
@@ -134,20 +140,21 @@ define(math::NTH_PRIME);
 ```
 
 ```supercollider
-// 4. expose it from a class (RustPrim.sc)
-*nthPrime { |n| _RustNthPrime; ^this.primitiveFailed }
+// 4. expose it as a method (classes/RustExt.sc)
++ Integer { rustNthPrime { _RustNthPrime; ^this.primitiveFailed } }
 ```
 
-`args.arg(0)` is always the receiver (`self`); `args.arg(1)` is the first real
-argument, and so on. The argument count in the macro (`2` above) counts the
-receiver too: `*nthPrime { |n| ... }` pushes the class plus `n` = 2 slots.
+`args.arg(0)` is always the receiver (`self`); `args.arg(1)` is the first
+explicit argument, and so on. The count in the macro is the method's arity
+*including* the receiver: `10.rustNthPrime` pushes just the receiver = 1; a
+two-input method like `3.rustHypot(4)` pushes receiver + arg = 2.
 
 Use `sc_primitive!` for value functions and `sc_primitive_gc!` for anything that
 allocates — the latter passes your function an extra `&Gc` argument:
 
 ```rust
 fn primes_up_to(args: &mut Args, gc: &Gc) -> Result<(), PrimError> { ... }
-sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 2, primes_up_to);
+sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 1, primes_up_to);
 ```
 
 ---
@@ -156,15 +163,15 @@ sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 2, primes_up_to);
 
 All the example primitives live in [`sc-prim/src/prims/`](sc-prim/src/prims/) —
 open them as you read. Let's walk through one real, complete primitive:
-`RustPrim.factorize(360)` → `[2, 2, 2, 3, 3, 5]`. It takes a number and returns
-an Array, so it exercises both argument reading *and* GC allocation.
+`360.rustFactorize` → `[2, 2, 2, 3, 3, 5]`. It takes a number (the receiver) and
+returns an Array, so it exercises both argument reading *and* GC allocation.
 
 **Piece 1 — the function** ([`sc-prim/src/prims/math.rs`](sc-prim/src/prims/math.rs)):
 
 ```rust
 //                         ↓ &Gc, because we allocate an Array
 pub fn factorize(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
-    let mut n = args.arg(1).as_int()? as i64;   // arg(0)=receiver, arg(1)=n;
+    let mut n = args.arg(0).as_int()? as i64;   // arg(0) = the receiver (360);
                                                  // `?` returns errWrongType if not an Int
 
     // ----- plain Rust, no interpreter awareness at all -----
@@ -189,7 +196,7 @@ pub fn factorize(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
     args.set_result(arr.finish());              // write the Array into the result slot
     Ok(())
 }
-sc_primitive_gc!(FACTORIZE, "_RustFactorize", 2, factorize); // receiver + n = 2 args
+sc_primitive_gc!(FACTORIZE, "_RustFactorize", 1, factorize); // just the receiver = 1
 ```
 
 What each part is doing, mapped to the [GC rules](#how-the-garbage-collector-works-plain-language):
@@ -208,33 +215,34 @@ What each part is doing, mapped to the [GC rules](#how-the-garbage-collector-wor
 define(math::FACTORIZE);
 ```
 
-**Piece 3 — expose it from a class**
-([`lang/LangPrimSource/RustPrim.sc`](../lang/LangPrimSource/RustPrim.sc)):
+**Piece 3 — expose it as a method**
+([`classes/RustExt.sc`](classes/RustExt.sc)):
 
 ```supercollider
-*factorize { |n| _RustFactorize; ^this.primitiveFailed }
++ Integer { rustFactorize { _RustFactorize; ^this.primitiveFailed } }
 ```
 
 **Piece 4 — build & run.** Rebuild the lib (`cargo build --release` in `sc-prim/`),
-rebuild sclang, then `RustPrim.factorize(360)` returns `[2, 2, 2, 3, 3, 5]`.
+rebuild sclang, then `360.rustFactorize` returns `[2, 2, 2, 3, 3, 5]`.
 
 ### Adding your own
 
-It is the same four pieces. For a *value-only* primitive (no allocation), use
-`sc_primitive!` and drop the `&Gc`:
+It is the same four pieces. Say you want `x.rustClip(lo, hi)` — a *value-only*
+primitive (no allocation), so use `sc_primitive!` and drop the `&Gc`:
 
 ```rust
 pub fn clip(args: &mut Args) -> Result<(), PrimError> {
-    let x  = args.arg(1).as_float()?;
-    let lo = args.arg(2).as_float()?;
-    let hi = args.arg(3).as_float()?;
+    let x  = args.arg(0).as_float()?;   // receiver
+    let lo = args.arg(1).as_float()?;
+    let hi = args.arg(2).as_float()?;
     args.set_result(Value::Float(x.clamp(lo, hi)));
     Ok(())
 }
-sc_primitive!(CLIP, "_RustClip", 4, clip); // receiver + 3 args = 4
+sc_primitive!(CLIP, "_RustClip", 3, clip); // receiver + 2 args = 3
 ```
 
-…then register `math::CLIP`, add `*clip { |x, lo, hi| _RustClip; ^this.primitiveFailed }`,
+…then register `math::CLIP`, add
+`+ SimpleNumber { rustClip { |lo, hi| _RustClip; ^this.primitiveFailed } }`,
 and rebuild. Compare with the other examples for arrays
 ([`prims/array.rs`](sc-prim/src/prims/array.rs)), signals
 ([`prims/signal.rs`](sc-prim/src/prims/signal.rs)), strings
@@ -288,9 +296,9 @@ for (i, s) in sig.as_mut_slice().iter_mut().enumerate() {
 args.set_result(sig.finish());
 ```
 
-See [`prims/array.rs`](sc-prim/src/prims/array.rs) (`primesUpTo`, `histogram`)
-and [`prims/signal.rs`](sc-prim/src/prims/signal.rs) (`sineSignal`,
-`rustNormalize`, `rustRms`) for complete examples.
+See [`prims/array.rs`](sc-prim/src/prims/array.rs) (`rustPrimesUpTo`,
+`rustHistogram`) and [`prims/signal.rs`](sc-prim/src/prims/signal.rs)
+(`rustSine`, `rustNormalize`, `rustRms`) for complete examples.
 
 ---
 
@@ -371,7 +379,7 @@ feature) is:
 
 ```rust
 pub fn http_get(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
-    let url = args.arg(1).as_str()?;
+    let url = args.arg(0).as_str()?;   // receiver is the URL string
     let body = ureq::get(url).timeout(Duration::from_secs(10)).call()
         .ok().and_then(|r| r.into_string().ok());
     match body {
@@ -383,7 +391,7 @@ pub fn http_get(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
 ```
 
 Build it with `cargo build --release --features http`, then
-`RustPrim.httpGet("http://example.com")`.
+`"http://example.com".rustHttpGet`.
 
 > **Caveat — blocking.** This call blocks the language thread until it completes
 > or times out; sclang is frozen meanwhile. Fine for scripting, not for live use.
