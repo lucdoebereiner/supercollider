@@ -20,6 +20,7 @@
 //! `host/sc_host.h`), so it is decoupled from sclang's internal layout.
 
 pub mod args;
+pub mod async_value;
 pub mod error;
 pub mod foreign;
 pub mod gc;

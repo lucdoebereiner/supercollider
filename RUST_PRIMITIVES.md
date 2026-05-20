@@ -131,7 +131,9 @@ c.free;                           // [Rust Drop] Counter 'voices' freed at count
 ```
 
 The HTTP example needs the optional feature
-(`cargo build --release --features http`), then `"http://example.com".rustHttpGet`.
+(`cargo build --release --features http`): blocking `"http://example.com".rustHttpGet`,
+or non-blocking `RustHttpRequest("http://example.com").onComplete { |body, err| ... }`
+(runs on a background thread, polled — never freezes the language thread).
 
 ---
 

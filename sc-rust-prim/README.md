@@ -12,7 +12,7 @@ see `../RUST_PRIMITIVES.md` at the repo root.
 sc-rust-prim/
 ├── host/sc_host.h            # the thin C ABI everything agrees on
 ├── sc-prim/                  # the Rust crate (safe layer + example primitives)
-│   ├── src/{host,slot,args,gc,foreign,macros,error}.rs        # the binding layer
+│   ├── src/{host,slot,args,gc,foreign,object,async_value,macros,error}.rs  # the binding layer
 │   └── src/prims/{math,array,signal,string,foreign_demo,http}.rs  # the example primitives
 ├── mock_host/                # standalone C++ host: runs the prims WITHOUT sclang
 ├── integration/              # the REAL backend + .sc glue + how-to-wire-in guide
@@ -39,7 +39,7 @@ clashing with existing methods like `hypot`/`reverse`/`normalize`):
 | signals (float arrays) | `Signal.rustSine(n)`, `sig.rustNormalize`, `sig.rustRms` | [`prims/signal.rs`](sc-prim/src/prims/signal.rs) |
 | strings | `"abc".rustReverse`, `"hi".rustShout` | [`prims/string.rs`](sc-prim/src/prims/string.rs) |
 | foreign objects | `RustCounter("name")` (Rust value owned via `Drop` + finalizer) | [`prims/foreign_demo.rs`](sc-prim/src/prims/foreign_demo.rs) |
-| http (opt-in feature) | `url.rustHttpGet` (pulls in the `ureq` crate) | [`prims/http.rs`](sc-prim/src/prims/http.rs) |
+| http (opt-in feature) | `url.rustHttpGet` (blocking) and **non-blocking** `RustHttpRequest(url)` (background thread + poll) | [`prims/http.rs`](sc-prim/src/prims/http.rs) |
 
 They are registered in [`sc-prim/src/registry.rs`](sc-prim/src/registry.rs) and
 exposed to sclang by [`classes/RustExt.sc`](classes/RustExt.sc) (class extensions).

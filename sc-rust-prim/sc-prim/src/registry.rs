@@ -30,5 +30,13 @@ pub fn register_all() {
 
     // http (optional: requires the `http` Cargo feature)
     #[cfg(feature = "http")]
-    define(crate::prims::http::HTTP_GET);
+    {
+        use crate::prims::http;
+        define(http::HTTP_GET); // blocking
+        // non-blocking RustHttpRequest:
+        define(http::HTTP_START);
+        define(http::HTTP_IS_READY);
+        define(http::HTTP_RESULT);
+        define(http::HTTP_ERROR);
+    }
 }

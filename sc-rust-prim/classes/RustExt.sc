@@ -59,3 +59,32 @@ RustCounter {
 	next { _RustCounterNext; ^this.primitiveFailed }   // -> new count
 	free { _RustCounterFree; ^this.primitiveFailed }   // drop the Rust object now
 }
+
+// Non-blocking HTTP GET (requires the lib built with --features http).
+// The request runs on a Rust background thread; you poll for the result, so the
+// language thread is never blocked. Example:
+//
+//   r = RustHttpRequest("http://example.com");
+//   r.onComplete { |body, err| (body ? err).postln };  // non-blocking, AppClock
+//
+// or poll manually:  if(r.isReady) { r.result.postln };
+RustHttpRequest {
+	var ptr;        // slot 0 — Rust heap pointer (the Pending<Result>)
+	var finalizer;  // slot 1 — finalizer reference
+
+	*new { |url| ^super.new.prStart(url) }
+	prStart { |url| _RustHttpStart; ^this.primitiveFailed }
+
+	isReady { _RustHttpIsReady; ^this.primitiveFailed }  // -> Boolean
+	result  { _RustHttpResult;  ^this.primitiveFailed }  // -> body String, or nil
+	error   { _RustHttpError;   ^this.primitiveFailed }  // -> error String, or nil
+
+	// Convenience: poll on a clock and call `func.(body, error)` when done.
+	// Pure sclang — no primitive — and fully non-blocking.
+	onComplete { |func, pollRate = 0.1|
+		^Routine({
+			while { this.isReady.not } { pollRate.wait };
+			func.value(this.result, this.error);
+		}).play(AppClock);
+	}
+}

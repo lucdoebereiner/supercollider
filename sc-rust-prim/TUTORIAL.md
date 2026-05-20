@@ -535,12 +535,84 @@ Build it with `cargo build --release --features http`, then
 
 > **Caveat — blocking.** This call blocks the language thread until it completes
 > or times out; sclang is frozen meanwhile. Fine for scripting, not for live use.
-> A production version would run the request on a background thread (`std::thread`
-> or an async runtime) and deliver the result back to sclang asynchronously — for
-> example by storing it and signalling a registered callback / a polled flag.
-> That target object must survive until the result arrives, so you'd
-> [root it](#keeping-sclang-references-alive-across-calls-rooting) by stashing it
-> in an object slot with `object::set_field`.
+
+### Non-blocking, the right way
+
+The interesting version returns immediately and runs the request on a background
+thread. The catch is the rule from the GC section, sharpened: **sclang is
+single-threaded — you may only allocate objects / call the interpreter from the
+language thread.** So the worker thread must touch *only Rust memory*, and the
+language thread does all the sclang-facing work when it polls.
+
+The reusable piece is [`async_value::Pending<T>`](sc-prim/src/async_value.rs): it
+spawns a thread, runs your closure, and stores the result in an `Arc<Mutex<…>>`.
+Nothing in it calls the interpreter.
+
+```rust
+// start: spawn the fetch, attach the Pending to `self` (a RustHttpRequest)
+pub fn http_start(args: &mut Args) -> Result<(), PrimError> {
+    let obj = args.receiver_obj()?;
+    let url = args.arg(1).as_str()?.to_owned();             // own it for the thread
+    let pending = Pending::spawn(move || fetch(&url));      // background thread
+    unsafe { foreign::attach(args.vm(), obj, pending) };    // owned by the SC object
+    args.set_result(Value::Obj(obj));
+    Ok(())
+}
+
+// poll: the language thread reads the shared state; only HERE do we allocate
+pub fn http_result(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
+    let obj = args.receiver_obj()?;
+    let body = unsafe { foreign::with_mut::<Pending<HttpResult>, _>(obj,
+        |p| p.with(|v| match v { Some(Ok(b)) => Some(b.clone()), _ => None })) }.flatten();
+    match body {
+        Some(b) => args.set_result(gc.new_string(&b)?),     // allocate on lang thread
+        None    => args.set_result(Value::Nil),
+    }
+    Ok(())
+}
+```
+
+The `Pending` lives inside the foreign object (slots 0/1), so when the
+`RustHttpRequest` is freed or collected the finalizer drops it — and because the
+worker holds its own `Arc` clone, an in-flight request still finishes and cleans
+up after itself (no join, no block, no leak).
+
+On the sclang side it's an ordinary poll loop, wrapped in a convenience method:
+
+```supercollider
+RustHttpRequest {
+    var ptr, finalizer;                                  // slots 0,1 (Rust-managed)
+    *new { |url| ^super.new.prStart(url) }
+    prStart { |url| _RustHttpStart; ^this.primitiveFailed }
+    isReady { _RustHttpIsReady; ^this.primitiveFailed }  // Boolean
+    result  { _RustHttpResult;  ^this.primitiveFailed }  // body String or nil
+    error   { _RustHttpError;   ^this.primitiveFailed }  // error String or nil
+    onComplete { |func, pollRate = 0.1|
+        ^Routine({
+            while { this.isReady.not } { pollRate.wait }; // yields — never blocks
+            func.value(this.result, this.error);
+        }).play(AppClock);
+    }
+}
+```
+
+```supercollider
+// fires the function when done; the interpreter stays fully responsive meanwhile
+RustHttpRequest("http://example.com").onComplete { |body, err|
+    (body ? err).postln;
+};
+```
+
+**Why poll instead of "push" the result?** Because pushing would mean calling an
+sclang function *from the worker thread*, which is unsafe — it would allocate and
+run the interpreter off the language thread. The poll model keeps every
+interpreter touch on the language thread by construction. (A push design is
+possible but must marshal the call onto the language thread via SC's scheduler /
+language lock — much easier to get wrong, and out of scope here.)
+
+Note this needs no rooting: the worker only ever touches the `Pending`'s `Arc`
+(Rust memory), never an sclang object. Rooting (previous section) is for when a
+*Rust value must remember an sclang object* across calls — a different case.
 
 ---
 
