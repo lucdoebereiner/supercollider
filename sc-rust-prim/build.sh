@@ -13,7 +13,7 @@ echo "== cargo build --release (libsc_prim.a) =="
 echo
 echo "== build mock host =="
 mkdir -p build
-g++ -std=c++17 -Wall -Ihost examples/mock_host/mock_host.cpp \
+g++ -std=c++17 -Wall -Ihost mock_host/mock_host.cpp \
     -Wl,--start-group sc-prim/target/release/libsc_prim.a -Wl,--end-group \
     -lpthread -ldl -lm -o build/mock_demo
 

@@ -13,26 +13,33 @@ sc-rust-prim/
 ├── host/sc_host.h            # the thin C ABI everything agrees on
 ├── sc-prim/                  # the Rust crate (safe layer + example primitives)
 │   ├── src/{host,slot,args,gc,foreign,macros,error}.rs        # the binding layer
-│   └── src/prims/{math,array,signal,string,foreign_demo,http}.rs  # example primitives
-├── examples/mock_host/       # standalone C++ host: runs the prims WITHOUT sclang
+│   └── src/prims/{math,array,signal,string,foreign_demo,http}.rs  # the example primitives
+├── mock_host/                # standalone C++ host: runs the prims WITHOUT sclang
 ├── integration/              # the REAL backend + .sc glue + how-to-wire-in guide
 ├── TUTORIAL.md               # how to write your own primitive (+ GC explained)
 └── build.sh                  # cargo test + build + run the demo
 ```
 
 **New here? Read [`TUTORIAL.md`](TUTORIAL.md)** — a from-scratch guide with a
-plain-language explanation of SuperCollider's garbage collector.
+plain-language explanation of SuperCollider's garbage collector and a line-by-line
+walkthrough of a real primitive.
 
-Example primitives, by category:
+## The example primitives
 
-| category | primitives |
-|---|---|
-| numbers | `nthPrime`, `hypot`, `factorize` (number → Array) |
-| arrays | `primesUpTo`, `histogram` |
-| signals (float arrays) | `sineSignal` (create), `rustNormalize`, `rustRms` (process) |
-| strings | `reverseString`, `shout` |
-| foreign objects | `RustCounter` (Rust value owned via `Drop` + finalizer) |
-| http (opt-in feature) | `httpGet` (pulls in the `ureq` crate) |
+All live in [`sc-prim/src/prims/`](sc-prim/src/prims/). Open them — each is a
+plain Rust function plus one `sc_primitive!`/`sc_primitive_gc!` line:
+
+| category | primitives | source |
+|---|---|---|
+| numbers | `nthPrime`, `hypot`, `factorize` (number → Array) | [`prims/math.rs`](sc-prim/src/prims/math.rs) |
+| arrays | `primesUpTo`, `histogram` | [`prims/array.rs`](sc-prim/src/prims/array.rs) |
+| signals (float arrays) | `sineSignal` (create), `rustNormalize`, `rustRms` (process) | [`prims/signal.rs`](sc-prim/src/prims/signal.rs) |
+| strings | `reverseString`, `shout` | [`prims/string.rs`](sc-prim/src/prims/string.rs) |
+| foreign objects | `RustCounter` (Rust value owned via `Drop` + finalizer) | [`prims/foreign_demo.rs`](sc-prim/src/prims/foreign_demo.rs) |
+| http (opt-in feature) | `httpGet` (pulls in the `ureq` crate) | [`prims/http.rs`](sc-prim/src/prims/http.rs) |
+
+They are registered in [`sc-prim/src/registry.rs`](sc-prim/src/registry.rs) and
+exposed to sclang by [`integration/SCRustPrim.sc`](integration/SCRustPrim.sc).
 
 ## Try it (no SuperCollider needed)
 
@@ -90,7 +97,7 @@ sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 2, primes_up_to);
 The Rust crate depends only on `host/sc_host.h`. That ABI has two
 implementations:
 
-- **`examples/mock_host/mock_host.cpp`** — malloc-backed, lets the whole thing
+- **`mock_host/mock_host.cpp`** — malloc-backed, lets the whole thing
   build and run on its own (what `build.sh` uses).
 - **`integration/sc_rust_shim.cpp`** — the production backend, wired to sclang's
   real `PyrSlot`/`PyrObject`/GC. It is the *only* file that includes SC headers,

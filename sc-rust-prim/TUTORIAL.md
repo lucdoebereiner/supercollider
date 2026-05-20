@@ -152,11 +152,76 @@ sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 2, primes_up_to);
 
 ---
 
-## Walkthrough: add your own primitive
+## Walkthrough: `factorize`, line by line
 
-Let's add `RustPrim.clip(x, lo, hi)` — clamp a float.
+All the example primitives live in [`sc-prim/src/prims/`](sc-prim/src/prims/) —
+open them as you read. Let's walk through one real, complete primitive:
+`RustPrim.factorize(360)` → `[2, 2, 2, 3, 3, 5]`. It takes a number and returns
+an Array, so it exercises both argument reading *and* GC allocation.
 
-**1. Write the function** in `sc-prim/src/prims/math.rs`:
+**Piece 1 — the function** ([`sc-prim/src/prims/math.rs`](sc-prim/src/prims/math.rs)):
+
+```rust
+//                         ↓ &Gc, because we allocate an Array
+pub fn factorize(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
+    let mut n = args.arg(1).as_int()? as i64;   // arg(0)=receiver, arg(1)=n;
+                                                 // `?` returns errWrongType if not an Int
+
+    // ----- plain Rust, no interpreter awareness at all -----
+    let mut factors = Vec::new();
+    let mut d = 2;
+    while d * d <= n {
+        while n % d == 0 {
+            factors.push(d as i32);
+            n /= d;
+        }
+        d += 1;
+    }
+    if n > 1 {
+        factors.push(n as i32);
+    }
+
+    // ----- hand the result back to sclang as an Array -----
+    let mut arr = gc.new_array(factors.len())?; // allocate inside the paused-GC window
+    for (i, f) in factors.iter().enumerate() {
+        arr.set(i, Value::Int(*f));             // `set` runs the write barrier for us
+    }
+    args.set_result(arr.finish());              // write the Array into the result slot
+    Ok(())
+}
+sc_primitive_gc!(FACTORIZE, "_RustFactorize", 2, factorize); // receiver + n = 2 args
+```
+
+What each part is doing, mapped to the [GC rules](#how-the-garbage-collector-works-plain-language):
+
+- `gc` is the **collection-paused window** (Rule 2). It exists for the whole call,
+  so the partly-built array can't be collected mid-construction. When the function
+  returns, the window closes — but by then `set_result` has put the array on the
+  stack, which the GC scans, so it's safe.
+- `arr.set(...)` is the only way to fill the array, and it applies the **write
+  barrier** (Rule 1) every time — you can't forget it.
+- The actual maths is ordinary Rust. No `unsafe`, no GC bookkeeping in sight.
+
+**Piece 2 — register it** ([`sc-prim/src/registry.rs`](sc-prim/src/registry.rs)):
+
+```rust
+define(math::FACTORIZE);
+```
+
+**Piece 3 — expose it from a class**
+([`lang/LangPrimSource/RustPrim.sc`](../lang/LangPrimSource/RustPrim.sc)):
+
+```supercollider
+*factorize { |n| _RustFactorize; ^this.primitiveFailed }
+```
+
+**Piece 4 — build & run.** Rebuild the lib (`cargo build --release` in `sc-prim/`),
+rebuild sclang, then `RustPrim.factorize(360)` returns `[2, 2, 2, 3, 3, 5]`.
+
+### Adding your own
+
+It is the same four pieces. For a *value-only* primitive (no allocation), use
+`sc_primitive!` and drop the `&Gc`:
 
 ```rust
 pub fn clip(args: &mut Args) -> Result<(), PrimError> {
@@ -166,25 +231,15 @@ pub fn clip(args: &mut Args) -> Result<(), PrimError> {
     args.set_result(Value::Float(x.clamp(lo, hi)));
     Ok(())
 }
-sc_primitive!(CLIP, "_RustClip", 4, clip);   // receiver + 3 args = 4
+sc_primitive!(CLIP, "_RustClip", 4, clip); // receiver + 3 args = 4
 ```
 
-**2. Register it** in `sc-prim/src/registry.rs`:
-
-```rust
-define(math::CLIP);
-```
-
-**3. Expose it** in `lang/LangPrimSource/RustPrim.sc`:
-
-```supercollider
-*clip { |x, lo, hi| _RustClip; ^this.primitiveFailed }
-```
-
-**4. Rebuild** the lib (`cargo build --release` in `sc-prim/`), rebuild sclang,
-and `RustPrim.clip(5, 0, 3)` returns `3.0`.
-
-That's it — no `unsafe`, no GC code, because `clip` only deals in values.
+…then register `math::CLIP`, add `*clip { |x, lo, hi| _RustClip; ^this.primitiveFailed }`,
+and rebuild. Compare with the other examples for arrays
+([`prims/array.rs`](sc-prim/src/prims/array.rs)), signals
+([`prims/signal.rs`](sc-prim/src/prims/signal.rs)), strings
+([`prims/string.rs`](sc-prim/src/prims/string.rs)) and foreign objects
+([`prims/foreign_demo.rs`](sc-prim/src/prims/foreign_demo.rs)).
 
 ---
 
@@ -233,8 +288,9 @@ for (i, s) in sig.as_mut_slice().iter_mut().enumerate() {
 args.set_result(sig.finish());
 ```
 
-See `prims/array.rs` (`primesUpTo`, `histogram`) and `prims/signal.rs`
-(`sineSignal`, `rustNormalize`, `rustRms`) for complete examples.
+See [`prims/array.rs`](sc-prim/src/prims/array.rs) (`primesUpTo`, `histogram`)
+and [`prims/signal.rs`](sc-prim/src/prims/signal.rs) (`sineSignal`,
+`rustNormalize`, `rustRms`) for complete examples.
 
 ---
 
@@ -310,7 +366,8 @@ interpreter and crash it.
 ## Example: an HTTP request
 
 Doing HTTP in a C++ primitive means sockets or linking curl. In Rust it's a
-crate. `prims/http.rs` (behind the `http` Cargo feature) is:
+crate. [`prims/http.rs`](sc-prim/src/prims/http.rs) (behind the `http` Cargo
+feature) is:
 
 ```rust
 pub fn http_get(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
@@ -343,7 +400,8 @@ Build it with `cargo build --release --features http`, then
 Two layers, both run by `cargo test`:
 
 - **Behavior** — each primitive is driven through an in-process mock host
-  (`src/test_host.rs`) and its result checked (`src/tests.rs`).
+  ([`src/test_host.rs`](sc-prim/src/test_host.rs)) and its result checked
+  ([`src/tests.rs`](sc-prim/src/tests.rs)).
 - **Memory safety** — a `LeakProbe` type increments a counter on creation and
   decrements on `Drop`. The tests drive the foreign-object machinery thousands of
   times and assert the live count returns to **zero** (no leak) and never goes
