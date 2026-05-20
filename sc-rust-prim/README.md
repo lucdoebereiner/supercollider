@@ -1,0 +1,96 @@
+# sc-prim — SuperCollider sclang primitives in safe Rust
+
+A proof-of-concept abstraction layer for writing `sclang` **language primitives**
+(the `_Foo` natives behind methods) in Rust instead of C++, so that the GC
+discipline that makes C++ primitives error-prone is handled by the type system.
+
+This tree lives **inside** a SuperCollider checkout (the `rust-primitives` branch),
+under `sc-rust-prim/`. The sclang-side wiring is already applied on that branch;
+see `../RUST_PRIMITIVES.md` at the repo root.
+
+```
+sc-rust-prim/
+├── host/sc_host.h            # the thin C ABI everything agrees on
+├── sc-prim/                  # the Rust crate (safe layer + example primitives)
+│   ├── src/{host,slot,args,gc,foreign,macros,error}.rs   # the binding layer
+│   └── src/prims/{math,array,string,foreign_demo}.rs     # example primitives
+├── examples/mock_host/       # standalone C++ host: runs the prims WITHOUT sclang
+├── integration/              # the REAL backend + .sc glue + how-to-wire-in guide
+└── build.sh                  # cargo test + build + run the demo
+```
+
+## Try it (no SuperCollider needed)
+
+```sh
+./build.sh
+```
+
+You should see all the primitives run against the mock host, including a Rust
+object whose `Drop` fires both on explicit `.free` and at simulated GC time:
+
+```
+nthPrime(10)   -> 29
+primesUpTo(30) -> [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
+reverse("hello") -> "olleh"
+  [Rust Drop] Counter 'c1' freed at count 2
+  [Rust Drop] Counter 'c2' freed at count 1
+```
+
+`cargo test` (run by `build.sh`) drives the same primitives through an in-process
+backend and checks results, including the panic-to-error-code path.
+
+## The idea
+
+The hard part of an sclang primitive is not C++ memory management — it is
+sclang's incremental tri-color GC: **write barriers** and keeping freshly
+allocated objects **alive across allocations**. Switching language doesn't fix
+that; a typed wrapper does. Here:
+
+| Concern | How it's handled |
+|---|---|
+| Read args / return scalars | `Args` + `Value`; tag-checked, `?`-propagating errors |
+| Allocate objects | `Gc` RAII scope = sclang "delayed collection"; no mid-build collection |
+| Write barriers | applied *inside* `ArrayBuilder::set` — impossible to forget |
+| Foreign Rust objects | `foreign::attach::<T>` + finalizer ⇒ Rust `Drop` at GC time; `take` for eager free |
+| Panics | caught at the FFI boundary, turned into `errFailed` |
+
+So a primitive reads like ordinary Rust:
+
+```rust
+fn primes_up_to(args: &mut Args, gc: &Gc) -> Result<(), PrimError> {
+    let n = args.arg(1).as_int()?.max(0) as usize;
+    let primes = sieve(n);                 // plain Rust, zero GC awareness
+    let mut arr = gc.new_array(primes.len())?;
+    for (i, p) in primes.iter().enumerate() {
+        arr.set(i, Value::Int(*p));        // barrier handled for you
+    }
+    args.set_result(arr.finish());
+    Ok(())
+}
+sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 2, primes_up_to);
+```
+
+## Architecture: one ABI, two backends
+
+The Rust crate depends only on `host/sc_host.h`. That ABI has two
+implementations:
+
+- **`examples/mock_host/mock_host.cpp`** — malloc-backed, lets the whole thing
+  build and run on its own (what `build.sh` uses).
+- **`integration/sc_rust_shim.cpp`** — the production backend, wired to sclang's
+  real `PyrSlot`/`PyrObject`/GC. It is the *only* file that includes SC headers,
+  so SC version drift is contained to one place.
+
+To run inside a real `sclang`, follow **`integration/README.md`** (three small
+edits to the SC build + dropping `SCRustPrim.sc` into your extensions dir).
+
+## Status & limits
+
+- Verified: value primitives, array/string builders, foreign objects with
+  `Drop`, panic recovery — all green under `cargo test` and the mock demo.
+- Not done here: actually patching the SuperCollider tree (left to you), a
+  runtime plugin loader (sclang links primitives statically), and broader type
+  coverage (symbols, FloatArray/Int8Array data, keyword args).
+- The residual cases the abstraction *can't* hide: holding an sclang object
+  reference on the Rust side past the call, and primitives that re-enter the
+  interpreter. Both would need explicit rooting.

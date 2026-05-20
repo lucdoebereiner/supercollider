@@ -1,0 +1,3 @@
+/build/
+sc-prim/target/
+**/*.rs.bk

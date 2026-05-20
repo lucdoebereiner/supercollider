@@ -4122,6 +4122,13 @@ void initPrimitives() {
 
     initSCDocPrimitives();
 
+#ifdef SC_USE_RUST_PRIMITIVES
+    // Register language primitives implemented in Rust (see ../sc-rust-prim).
+    // Enabled by the SC_RUST_PRIMITIVES CMake option.
+    extern "C" void sc_rust_register_all();
+    sc_rust_register_all();
+#endif
+
     s_recvmsg = getsym("receiveMsg");
     post("\tFound %d primitives.\n", nextPrimitiveIndex());
 }

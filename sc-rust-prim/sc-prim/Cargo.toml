@@ -1,0 +1,16 @@
+[package]
+name = "sc-prim"
+version = "0.1.0"
+edition = "2021"
+description = "Write SuperCollider sclang primitives in safe Rust"
+license = "GPL-3.0-or-later"
+
+[lib]
+# staticlib  -> libsc_prim.a, linked into sclang (or the mock host)
+# lib (rlib) -> needed so `cargo test` can build a test harness
+crate-type = ["staticlib", "lib"]
+
+[profile.release]
+# Keep unwinding so catch_unwind in the primitive wrapper actually catches
+# panics instead of aborting the whole interpreter.
+panic = "unwind"

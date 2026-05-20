@@ -193,6 +193,16 @@ endif()
 include(../SCDoc/CMakeLists.txt)
 list(APPEND sclang_sources ${SCDOC_SRCS})
 
+# --- Rust language primitives (opt-in) -----------------------------------
+# When enabled, compile the C-ABI shim and link the prebuilt Rust static lib
+# (see ../sc-rust-prim). Default OFF so ordinary builds are unaffected.
+option(SC_RUST_PRIMITIVES "Build language primitives written in Rust (sc-prim)" OFF)
+if(SC_RUST_PRIMITIVES)
+	set(SC_RUST_PRIM_DIR "${CMAKE_SOURCE_DIR}/sc-rust-prim" CACHE PATH
+		"Path to the sc-rust-prim project (contains host/ and sc-prim/)")
+	list(APPEND sclang_sources LangPrimSource/sc_rust_shim.cpp)
+endif()
+
 if(0 AND FINAL_BUILD) # sclang final-builds are broken
 	CREATE_FINAL_FILE(libsclang_final.cpp ${sclang_sources})
 	add_library(libsclang STATIC libsclang_final.cpp ${sclang_parser_source})
@@ -202,6 +212,23 @@ endif()
 
 target_compile_definitions(libsclang PRIVATE YYSTACK_USE_ALLOC)
 target_link_libraries(libsclang tlsf ${PTHREADS_LIBRARIES})
+
+if(SC_RUST_PRIMITIVES)
+	set(SC_RUST_PRIM_LIB "${SC_RUST_PRIM_DIR}/sc-prim/target/release/libsc_prim.a"
+		CACHE FILEPATH "Path to the built libsc_prim.a")
+	if(NOT EXISTS "${SC_RUST_PRIM_LIB}")
+		message(FATAL_ERROR
+			"SC_RUST_PRIMITIVES is ON but ${SC_RUST_PRIM_LIB} was not found.\n"
+			"Build it first:  (cd ${SC_RUST_PRIM_DIR}/sc-prim && cargo build --release)")
+	endif()
+	target_include_directories(libsclang PRIVATE "${SC_RUST_PRIM_DIR}/host")
+	target_compile_definitions(libsclang PRIVATE SC_USE_RUST_PRIMITIVES)
+	target_link_libraries(libsclang "${SC_RUST_PRIM_LIB}")
+	if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+		target_link_libraries(libsclang pthread dl m)
+	endif()
+	message(STATUS "sclang: Rust primitives ENABLED (${SC_RUST_PRIM_LIB})")
+endif()
 
 if(SC_QT OR SC_IDE)
     get_target_property(QtCore_location Qt${QT_VERSION_MAJOR}::Core LOCATION)
