@@ -120,4 +120,6 @@ Extensions dir.
   coverage (symbols, FloatArray/Int8Array data, keyword args).
 - The residual cases the abstraction *can't* hide: holding an sclang object
   reference on the Rust side past the call, and primitives that re-enter the
-  interpreter. Both would need explicit rooting.
+  interpreter. Both need explicit rooting — store the reference in an object slot
+  via `object::set_field` (SC has no root-handle API; reachability is the only
+  mechanism). See the "rooting" section of [`TUTORIAL.md`](TUTORIAL.md).

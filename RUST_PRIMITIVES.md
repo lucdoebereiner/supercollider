@@ -178,8 +178,10 @@ sc_primitive_gc!(PRIMES_UP_TO, "_RustPrimesUpTo", 2, primes_up_to);
 - **Foreign objects** reserve instance-var slots 0 (pointer) and 1 (finalizer);
   declare those first in any class using `foreign::attach`.
 - **Not abstracted away:** holding an sclang object reference on the Rust side
-  past a primitive call, and primitives that re-enter the interpreter — both
-  would need explicit GC rooting.
+  past a primitive call, and primitives that re-enter the interpreter — both need
+  explicit rooting. SC has no root-handle API, so the fix is to store the
+  reference in an object slot (`object::set_field`) where the collector can reach
+  it; the crate provides that helper and documents it in `sc-rust-prim/TUTORIAL.md`.
 - **Status:** the Rust crate's `cargo test` (19 tests — every example plus three
   memory-safety tests: no-leak-on-free, no-leak-on-finalizer, no-double-free) and
   a standalone mock host pass; `sc_rust_shim.cpp` syntax-checks against these SC

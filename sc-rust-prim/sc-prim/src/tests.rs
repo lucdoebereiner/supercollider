@@ -272,6 +272,20 @@ fn no_leak_on_finalizer_collection() {
 }
 
 #[test]
+fn field_store_load_roundtrip() {
+    // Rooting primitive: store an sclang object reference into a slot of another
+    // object, read it back. (The mock host has no real collector, so this checks
+    // the slot write/read + barrier call, not collection survival.)
+    let parent = test_host::make_array(3); // 3 instance-var slots
+    let child = test_host::make_string("kept-alive");
+    unsafe { crate::object::set_field(test_host::vm_ptr(), parent, 2, crate::Value::Obj(child)) };
+    match unsafe { crate::object::get_field(parent, 2) } {
+        crate::Value::Obj(o) => assert_eq!(o, child),
+        other => panic!("expected the stored object, got {other:?}"),
+    }
+}
+
+#[test]
 fn no_double_free() {
     let live = AtomicI64::new(0);
     let obj = test_host::make_array(2);

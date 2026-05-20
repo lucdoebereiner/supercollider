@@ -113,8 +113,9 @@ Rust wouldn't remove them, but a wrapper that bakes them in does.
 
 What the wrapper can't hide (rare): keeping an sclang object reference on the
 Rust side *after* the primitive returns, or a primitive that calls back into the
-interpreter mid-computation. Both need explicit "rooting" and are out of scope
-here.
+interpreter mid-computation. Both need explicit "rooting" — see
+[Keeping sclang references alive across calls](#keeping-sclang-references-alive-across-calls-rooting)
+below for the simple fix.
 
 ---
 
@@ -436,6 +437,66 @@ RustCounter {
 `take` drops immediately and nils the pointer, so the finalizer becomes a no-op:
 no double free. The `no_double_free` test verifies this.
 
+Note the `Counter` holds a `label: String` — that's a **Rust** value living inside
+the box, so it needs no rooting; it lives and dies with the box. Rooting is only
+about *sclang* object references, which is the next section.
+
+---
+
+## Keeping sclang references alive across calls (rooting)
+
+Everything above keeps objects alive automatically *within* a primitive call.
+The one thing the crate can't do for you is keep an **sclang object** alive
+*between* calls — and it's worth understanding why, because the fix is simple.
+
+SuperCollider's GC has **no "pin this" / root-registration API**. An object lives
+exactly as long as it is *reachable*: from a GC root (the interpreter's operand
+stack) or from another live object. The collector walks the stack and the object
+graph — it never looks at Rust memory.
+
+So this is a **use-after-free waiting to happen**:
+
+```rust
+// DON'T: the GC can't see Rust memory, so it will collect `buf`,
+// and this pointer dangles on the next call.
+static mut CACHED: *mut ScObj = std::ptr::null_mut();
+```
+
+The same trap applies to storing a `*mut ScObj` in a foreign object's Rust struct.
+
+**The fix — store it where the GC can see it: in an instance-var slot of an object
+sclang already holds.** That makes it reachable (= rooted), and the write barrier
+keeps it correct. Use [`object::set_field`] / [`object::get_field`]; keep the slot
+*index* on the Rust side, not the pointer:
+
+```rust
+use sc_prim::object;
+
+// remember an sclang object passed in, on `self` (which sclang holds):
+let me  = args.receiver_obj()?;
+let kept = args.arg(1).as_obj()?;       // some sclang object
+unsafe { object::set_field(args.vm(), me, FIELD_SLOT, Value::Obj(kept)) }; // rooted
+
+// ...some later primitive call on the same object:
+let me   = args.receiver_obj()?;
+let kept = unsafe { object::get_field(me, FIELD_SLOT) };   // still alive
+```
+
+This is exactly how SC's own primitives do it (e.g. `PyrFilePrim` stores results
+into the receiver's slots with a barrier). Reserve a `var` for it in your `.sc`
+class — and remember the foreign-object convention already uses slots 0 and 1, so
+your own fields start at slot 2.
+
+Two related advanced cases, same rule:
+
+- **Re-entering the interpreter** mid-primitive (running sclang code, evaluating a
+  function) can trigger a collection. Any sclang object you'll still need
+  afterwards must be reachable *before* you re-enter — i.e. stored in a slot, not
+  just in a Rust local.
+- **Truly global, never-freed** singletons can instead be made *permanent* (SC's
+  `NewPermanent`), which the collector never touches — but that leaks by design,
+  so reserve it for real globals.
+
 ---
 
 ## Errors and panics
@@ -477,8 +538,9 @@ Build it with `cargo build --release --features http`, then
 > A production version would run the request on a background thread (`std::thread`
 > or an async runtime) and deliver the result back to sclang asynchronously — for
 > example by storing it and signalling a registered callback / a polled flag.
-> That requires "rooting" the target object across the call, which is the one
-> area this crate intentionally leaves to you (see Rule notes above).
+> That target object must survive until the result arrives, so you'd
+> [root it](#keeping-sclang-references-alive-across-calls-rooting) by stashing it
+> in an object slot with `object::set_field`.
 
 ---
 

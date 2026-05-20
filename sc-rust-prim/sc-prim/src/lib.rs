@@ -26,6 +26,7 @@ pub mod gc;
 pub mod host;
 #[macro_use]
 pub mod macros;
+pub mod object;
 pub mod prims;
 pub mod registry;
 pub mod slot;
