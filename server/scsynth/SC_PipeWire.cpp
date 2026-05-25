@@ -120,16 +120,23 @@ private:
     struct spa_hook mOutListener {};
     struct spa_hook mInListener {};
 
-    // Shared capture buffer: input stream writes here on its process
-    // callback; output stream reads on its process callback. Planar layout
-    // (one channel slab after another), sized for up to kMaxQuantum frames.
-    // Both run on pw_thread_loop's single data thread, so serialized — no
-    // locking needed. mCaptureFrames is the valid-sample-count as of the
-    // last input callback.
-    std::vector<float> mCaptureBuf;
-    int mCaptureFrames = 0;
+    // Capture handoff: a lock-free single-producer/single-consumer ring.
+    // The input and output streams are independent PipeWire graph nodes
+    // driven on *different* RT threads with independent phase (verified:
+    // the two process callbacks report different pthread ids and drift by
+    // up to one quantum). The capture stream (RunInput) is the producer;
+    // the playback stream (RunOutput, which drives the DSP loop) is the
+    // consumer. The ring decouples the two clocks: it absorbs the per-
+    // callback phase jitter and removes the data race that a single shared
+    // buffer had. Layout is interleaved frames (channel-minor), capacity
+    // kCapRingFrames (power of two) frames per channel. mCapWrite/mCapRead
+    // are monotonic frame counters; (mCapWrite - mCapRead) is the fill.
+    static constexpr uint32_t kCapRingFrames = 32768; // power of two; >= 4 * max quantum
+    static constexpr uint32_t kCapRingMask = kCapRingFrames - 1;
+    std::vector<float> mCapRing; // kCapRingFrames * mCaptureChannels, interleaved
     int mCaptureChannels = 0;
-    bool mCaptureValid = false;
+    std::atomic<uint32_t> mCapWrite { 0 }; // frames produced (RunInput)
+    std::atomic<uint32_t> mCapRead { 0 }; // frames consumed (RunOutput)
 
     // Driver state
     SC_TimeDLL mDLL;
@@ -176,12 +183,11 @@ private:
     bool createInputStream(int numChannels);
     void tryCompleteSetup();
     void signalSetup();
-    // Adapt to a quantum change from PipeWire. Called on the data thread
-    // (RT) from RunOutput/RunInput. Returns false if the new quantum is
-    // unworkable (zero, > kMaxAcceptableQuantum, or not an integer
-    // multiple of world->mBufLength), in which case the caller must drop
-    // the buffer. mCaptureBuf is resized within its preallocated capacity
-    // so this remains allocation-free on the RT thread.
+    // Adapt to a quantum change from PipeWire. Called on the RT data thread
+    // from RunOutput (the ring consumer) only. Returns false if the new
+    // quantum is unworkable (zero, > kMaxAcceptableQuantum, or not an
+    // integer multiple of world->mBufLength), in which case the caller must
+    // drop the buffer. Allocation-free: the capture ring is fixed-size.
     bool handleQuantumChange(uint32_t newFrames);
 
     static constexpr uint32_t kMaxAcceptableQuantum = 8192;
@@ -460,11 +466,12 @@ bool SC_PipeWireDriver::DriverSetup(int* outNumSamples, double* outSampleRate) {
 
     if (numInputs > 0) {
         mCaptureChannels = numInputs;
-        // Reserve enough room for the largest quantum we'll accept so that
-        // mid-run resize() from handleQuantumChange() never reallocates on
-        // the RT thread. Then size to the current negotiated quantum.
-        mCaptureBuf.reserve(size_t(numInputs) * size_t(kMaxAcceptableQuantum));
-        mCaptureBuf.assign(size_t(numInputs) * size_t(mNegotiatedBufSize), 0.0f);
+        // Allocate the capture ring once, here on the main thread. Sized
+        // for kCapRingFrames frames per channel (>= 4 * max quantum), so
+        // the RT producer/consumer never allocate or resize.
+        mCapRing.assign(size_t(kCapRingFrames) * size_t(numInputs), 0.0f);
+        mCapWrite.store(0, std::memory_order_relaxed);
+        mCapRead.store(0, std::memory_order_relaxed);
     }
 
     *outNumSamples = mNegotiatedBufSize;
@@ -603,16 +610,15 @@ bool SC_PipeWireDriver::handleQuantumChange(uint32_t newFrames) {
     if (mNegotiatedRate > 0.0)
         mPeriodNs = 1e9 * double(newFrames) / mNegotiatedRate;
 
-    if (mCaptureChannels > 0) {
-        // Safe: capacity was reserved in DriverSetup to kMaxAcceptableQuantum
-        // frames per channel, so this resize() does not allocate.
-        mCaptureBuf.resize(size_t(mCaptureChannels) * size_t(newFrames), 0.0f);
-        // Existing input data is laid out for the previous mCaptureFrames
-        // stride and is now stale; invalidate so output zero-fills until
-        // the next input callback refills with the new stride.
-        mCaptureValid = false;
-        mCaptureFrames = 0;
-    }
+    // The capture ring stores plain interleaved frames, so its layout does
+    // not depend on the quantum and needs no resize here. We do flush it
+    // (drop whatever is buffered) so the consumer re-establishes its
+    // latency cushion against the new quantum rather than reading frames
+    // captured under the old timing. handleQuantumChange is only ever
+    // called from RunOutput (the ring consumer), so advancing mCapRead here
+    // keeps the single-producer/single-consumer invariant intact.
+    if (mCaptureChannels > 0)
+        mCapRead.store(mCapWrite.load(std::memory_order_acquire), std::memory_order_release);
 
     if (mSampleRate > 0.0)
         mDLL.Reset(mSampleRate, mNumSamplesPerCallback, SC_TIME_DLL_BW, pwOscTimeSeconds());
@@ -620,8 +626,10 @@ bool SC_PipeWireDriver::handleQuantumChange(uint32_t newFrames) {
 }
 
 // =====================================================================
-// RunInput: capture stream process callback
-// Just stash the most recent capture buffer in the shared planar buffer.
+// RunInput: capture stream process callback (ring producer)
+// Push the captured frames into the lock-free ring. Runs on a different RT
+// thread than RunOutput, so it only ever writes the ring storage and the
+// mCapWrite counter; it never touches mCapRead.
 
 void SC_PipeWireDriver::RunInput() {
     if (!mInStream)
@@ -635,8 +643,8 @@ void SC_PipeWireDriver::RunInput() {
         return;
     }
 
-    const int channels = mCaptureChannels > 0 ? mCaptureChannels : mNegotiatedInChannels;
-    if (channels <= 0) {
+    const int channels = mCaptureChannels;
+    if (channels <= 0 || mCapRing.empty()) {
         pw_stream_queue_buffer(mInStream, pwBuf);
         return;
     }
@@ -646,24 +654,21 @@ void SC_PipeWireDriver::RunInput() {
     const uint32_t size = chunk ? chunk->size : 0;
     const uint32_t nFrames = size / stride;
 
-    // If input fires first on a new (larger) quantum, grow the capture
-    // buffer up front so the bounds check below doesn't drop the data.
-    // Output's RunOutput will see the already-updated state.
-    if (mSetupReady && nFrames != mCurrentQuantum && nFrames > 0)
-        handleQuantumChange(nFrames);
-
     const float* interleaved = reinterpret_cast<const float*>(
         static_cast<const uint8_t*>(sbuf->datas[0].data) + offset);
 
-    if (nFrames > 0 && int(nFrames) * channels <= int(mCaptureBuf.size())) {
-        for (int k = 0; k < channels; ++k) {
-            float* dst = mCaptureBuf.data() + size_t(k) * size_t(nFrames);
-            const float* src = interleaved + k;
-            for (uint32_t n = 0; n < nFrames; ++n)
-                dst[n] = src[n * uint32_t(channels)];
+    if (nFrames > 0) {
+        const uint32_t w = mCapWrite.load(std::memory_order_relaxed);
+        float* ring = mCapRing.data();
+        for (uint32_t n = 0; n < nFrames; ++n) {
+            float* dst = ring + size_t((w + n) & kCapRingMask) * size_t(channels);
+            const float* src = interleaved + size_t(n) * size_t(channels);
+            for (int k = 0; k < channels; ++k)
+                dst[k] = src[k];
         }
-        mCaptureFrames = int(nFrames);
-        mCaptureValid = true;
+        // Publish: release so the consumer's acquire-load of mCapWrite sees
+        // all the ring writes above.
+        mCapWrite.store(w + nFrames, std::memory_order_release);
     }
     pw_stream_queue_buffer(mInStream, pwBuf);
 }
@@ -779,12 +784,32 @@ void SC_PipeWireDriver::RunOutput() {
         int32* outTouched = world->mAudioBusTouched;
         int32* inTouched = world->mAudioBusTouched + world->mNumOutputs;
 
-        // Per-sub-block capture data: slice of our shared capture buffer.
-        // mCaptureBuf is planar (channel-major) for the most recent input
-        // callback, sized mCaptureChannels * mCaptureFrames. If we don't
-        // have a full quantum yet, zero-fill.
-        const bool haveCapture = mCaptureValid && mCaptureFrames >= numSamples && numInputs > 0
-            && mCaptureChannels >= numInputs;
+        // Capture handoff (ring consumer). The capture stream runs on a
+        // separate RT thread; pull this cycle's input frames from the
+        // lock-free ring, keeping a small latency cushion (~2 quanta) so
+        // phase jitter between the two streams doesn't cause spurious
+        // underruns. capRBase is the ring frame index for the first frame
+        // of this callback; the per-sub-block loop below deinterleaves out
+        // of the ring at capRBase + bufFramePos.
+        uint32_t capRBase = 0;
+        bool haveCapture = false;
+        if (numInputs > 0 && mCaptureChannels >= numInputs) {
+            const uint32_t w = mCapWrite.load(std::memory_order_acquire);
+            uint32_t r = mCapRead.load(std::memory_order_relaxed);
+            const uint32_t avail = w - r; // wrap-safe
+            if (avail >= uint32_t(numSamples)) {
+                // If the producer has run far ahead (startup, or slow
+                // clock drift), drop the oldest frames so latency stays
+                // bounded at ~2 quanta rather than growing without limit.
+                if (avail > uint32_t(numSamples) * 3)
+                    r = w - uint32_t(numSamples) * 2;
+                capRBase = r;
+                mCapRead.store(r + uint32_t(numSamples), std::memory_order_release);
+                haveCapture = true;
+            }
+            // else: underrun this cycle -> zero-fill; leave mCapRead so the
+            // cushion rebuilds from the producer side.
+        }
 
         int bufFramePos = 0;
         int64 oscTime = mOSCbuftime = int64((mDLL.PeriodTime() + mMaxOutputLatency) * kSecondsToOSCunits + .5);
@@ -795,17 +820,25 @@ void SC_PipeWireDriver::RunOutput() {
         for (int i = 0; i < numBufs; ++i, world->mBufCounter++, bufFramePos += bufFrames) {
             int32 bufCounter = world->mBufCounter;
 
-            // Copy + touch inputs (if any).
+            // Copy + touch inputs (if any). The ring is interleaved, so
+            // deinterleave each channel into its scsynth input bus.
             if (numInputs > 0) {
-                for (int k = 0; k < numInputs; ++k) {
-                    float* dst = inBuses + k * bufFrames;
-                    if (haveCapture) {
-                        const float* src = mCaptureBuf.data() + size_t(k) * size_t(mCaptureFrames) + bufFramePos;
-                        std::memcpy(dst, src, sizeof(float) * size_t(bufFrames));
-                    } else {
-                        std::memset(dst, 0, sizeof(float) * size_t(bufFrames));
+                if (haveCapture) {
+                    const float* ring = mCapRing.data();
+                    const int capCh = mCaptureChannels;
+                    for (int k = 0; k < numInputs; ++k) {
+                        float* dst = inBuses + k * bufFrames;
+                        for (int n = 0; n < bufFrames; ++n) {
+                            const uint32_t slot = (capRBase + uint32_t(bufFramePos + n)) & kCapRingMask;
+                            dst[n] = ring[size_t(slot) * size_t(capCh) + k];
+                        }
+                        inTouched[k] = bufCounter;
                     }
-                    inTouched[k] = bufCounter;
+                } else {
+                    for (int k = 0; k < numInputs; ++k) {
+                        std::memset(inBuses + k * bufFrames, 0, sizeof(float) * size_t(bufFrames));
+                        inTouched[k] = bufCounter;
+                    }
                 }
             }
 
