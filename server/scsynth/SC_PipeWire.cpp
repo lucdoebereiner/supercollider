@@ -72,21 +72,29 @@ static inline uint64_t monotonic_ns() {
     return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
 }
 
-// Split a "-H" string into (outputTarget, inputTarget). Format:
-//   "outSink"             — target outSink for playback, default for capture
-//   ":inSource"           — default playback, target inSource for capture
-//   "outSink:inSource"    — target both
-//   ""                    — default both
-static void parse_device_name(const char* raw, std::string& outTarget, std::string& inTarget) {
+// Parse one per-direction device string of the form "[clientName]:[target]".
+//
+// This mirrors JACK's -H grammar (SC_Jack.cpp parses mInDeviceName as
+// "serverName:clientName"): a *bare* string with no ':' is the client name,
+// so `-H MyName` / `s.options.device = "MyName"` names the client exactly as
+// it does under JACK. Anything after the first ':' is the PipeWire target
+// node for this direction (the capture source for inDevice, the playback
+// sink for outDevice).
+//   "MyName"          — name the client "MyName", no target
+//   "MyName:hw_node"  — name the client AND target hw_node
+//   ":hw_node"        — default client name, target hw_node
+//   ""                — default client name, no target
+static void parse_device_field(const char* raw, std::string& clientName, std::string& target) {
     if (!raw || !*raw)
         return;
     const char* colon = strchr(raw, ':');
     if (!colon) {
-        outTarget = raw;
+        clientName = raw; // bare string => client name (JACK-compatible)
         return;
     }
-    outTarget.assign(raw, colon - raw);
-    inTarget.assign(colon + 1);
+    if (colon != raw)
+        clientName.assign(raw, colon - raw);
+    target.assign(colon + 1);
 }
 
 // =====================================================================
@@ -175,7 +183,8 @@ private:
     // mAvgCPU EMA — matches SC_Jack.cpp's local experimental accounting).
     // Tracked directly from per-callback wall time.
 
-    // Targets from -H
+    // Client name + targets from -H (see parse_device_field).
+    std::string mClientName = kPwDefaultClientName;
     std::string mOutTarget;
     std::string mInTarget;
 
@@ -268,11 +277,16 @@ SC_PipeWireDriver::~SC_PipeWireDriver() {
 // Stream creation
 
 bool SC_PipeWireDriver::createOutputStream(int numChannels) {
+    // PW_KEY_APP_NAME groups both nodes under one client in patchbays (the
+    // JACK single-client feel); the node name/description carry the direction
+    // suffix so the two boxes are distinguishable.
+    const std::string nodeName = mClientName + " playback";
     pw_properties* props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
                                              PW_KEY_MEDIA_CATEGORY, "Playback",
                                              PW_KEY_MEDIA_ROLE, "DSP",
-                                             PW_KEY_NODE_NAME, "SuperCollider",
-                                             PW_KEY_NODE_DESCRIPTION, "SuperCollider playback",
+                                             PW_KEY_APP_NAME, mClientName.c_str(),
+                                             PW_KEY_NODE_NAME, nodeName.c_str(),
+                                             PW_KEY_NODE_DESCRIPTION, nodeName.c_str(),
                                              nullptr);
     if (!mOutTarget.empty())
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, mOutTarget.c_str());
@@ -294,7 +308,7 @@ bool SC_PipeWireDriver::createOutputStream(int numChannels) {
         pw_properties_set(props, PW_KEY_NODE_FORCE_QUANTUM, qStr);
     }
 
-    mOutStream = pw_stream_new_simple(pw_thread_loop_get_loop(mLoop), "SuperCollider out", props,
+    mOutStream = pw_stream_new_simple(pw_thread_loop_get_loop(mLoop), nodeName.c_str(), props,
                                       &kOutEvents, this);
     if (!mOutStream)
         return false;
@@ -328,11 +342,15 @@ bool SC_PipeWireDriver::createOutputStream(int numChannels) {
 }
 
 bool SC_PipeWireDriver::createInputStream(int numChannels) {
+    // See createOutputStream: same PW_KEY_APP_NAME so the capture node groups
+    // with the playback node as one client; "capture" suffix on the node name.
+    const std::string nodeName = mClientName + " capture";
     pw_properties* props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
                                              PW_KEY_MEDIA_CATEGORY, "Capture",
                                              PW_KEY_MEDIA_ROLE, "DSP",
-                                             PW_KEY_NODE_NAME, "SuperCollider capture",
-                                             PW_KEY_NODE_DESCRIPTION, "SuperCollider capture",
+                                             PW_KEY_APP_NAME, mClientName.c_str(),
+                                             PW_KEY_NODE_NAME, nodeName.c_str(),
+                                             PW_KEY_NODE_DESCRIPTION, nodeName.c_str(),
                                              nullptr);
     if (!mInTarget.empty())
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, mInTarget.c_str());
@@ -343,7 +361,7 @@ bool SC_PipeWireDriver::createInputStream(int numChannels) {
         pw_properties_set(props, PW_KEY_NODE_FORCE_QUANTUM, qStr);
     }
 
-    mInStream = pw_stream_new_simple(pw_thread_loop_get_loop(mLoop), "SuperCollider in", props,
+    mInStream = pw_stream_new_simple(pw_thread_loop_get_loop(mLoop), nodeName.c_str(), props,
                                      &kInEvents, this);
     if (!mInStream)
         return false;
@@ -385,7 +403,22 @@ bool SC_PipeWireDriver::DriverSetup(int* outNumSamples, double* outSampleRate) {
         return false;
     }
 
-    parse_device_name(mWorld->hw->mInDeviceName, mOutTarget, mInTarget);
+    // inDevice -> capture source, outDevice -> playback sink. The client name
+    // is the bare/prefix part of either field; prefer inDevice, fall back to
+    // outDevice (they're identical when set via `s.options.device`).
+    {
+        std::string inName, outName;
+        parse_device_field(mWorld->hw->mInDeviceName, inName, mInTarget);
+        parse_device_field(mWorld->hw->mOutDeviceName, outName, mOutTarget);
+        if (!inName.empty())
+            mClientName = inName;
+        else if (!outName.empty())
+            mClientName = outName;
+        if (!inName.empty() && !outName.empty() && inName != outName)
+            scprintf("%s: inDevice/outDevice client names differ ('%s' vs '%s'); using '%s'\n",
+                     kPwDriverIdent, inName.c_str(), outName.c_str(), mClientName.c_str());
+    }
+    scprintf("%s: client name is '%s'\n", kPwDriverIdent, mClientName.c_str());
     if (!mOutTarget.empty())
         scprintf("%s: output target: %s\n", kPwDriverIdent, mOutTarget.c_str());
     if (!mInTarget.empty())
