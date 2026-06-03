@@ -10,3 +10,6 @@ set(SC_LINT_FORMAT_HELPER_SCRIPT_COMMAND lint)
 configure_file(lint_or_format.py.in "${CMAKE_BINARY_DIR}/lint.py")
 set(SC_LINT_FORMAT_HELPER_SCRIPT_COMMAND format)
 configure_file(lint_or_format.py.in "${CMAKE_BINARY_DIR}/format.py")
+
+# Experimental, opt-in sclang extension (PipeWire graph control)
+add_subdirectory(pipewire_patch)
