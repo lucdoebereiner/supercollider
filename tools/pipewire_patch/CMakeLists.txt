@@ -7,9 +7,11 @@
 #   cmake -DSC_INSTALL_PIPEWIRE_PATCH=ON .
 #   cmake --build . --target install
 #
-# This installs the .sc into the SYSTEM SuperCollider Extensions dir
-# (<prefix>/share/SuperCollider/Extensions), so sclang compiles it on
-# startup. For per-user development, prefer install.sh (symlink) instead.
+# This installs the .sc into the PER-USER SuperCollider Extensions dir
+# (${XDG_DATA_HOME:-$HOME/.local/share}/SuperCollider/Extensions), so the
+# install needs no sudo and sclang compiles it on startup. The destination is
+# an absolute path resolved at configure time, so it ignores
+# CMAKE_INSTALL_PREFIX. For a live-editable symlink instead, use install.sh.
 
 option(SC_INSTALL_PIPEWIRE_PATCH
 	"Install the experimental PipeWirePatch sclang extension (pw-link graph control)" OFF)
@@ -20,10 +22,13 @@ if(SC_INSTALL_PIPEWIRE_PATCH)
 			"SC_INSTALL_PIPEWIRE_PATCH is Linux-only (PipeWire backend experiment); "
 			"skipping install on this platform.")
 	else()
-		install(FILES PipeWirePatch.sc
-			DESTINATION share/SuperCollider/Extensions/PipeWirePatch)
-		message(STATUS
-			"PipeWirePatch: will install to "
-			"${CMAKE_INSTALL_PREFIX}/share/SuperCollider/Extensions/PipeWirePatch")
+		if(DEFINED ENV{XDG_DATA_HOME})
+			set(_sc_user_data "$ENV{XDG_DATA_HOME}")
+		else()
+			set(_sc_user_data "$ENV{HOME}/.local/share")
+		endif()
+		set(_sc_ext_dir "${_sc_user_data}/SuperCollider/Extensions/PipeWirePatch")
+		install(FILES PipeWirePatch.sc DESTINATION "${_sc_ext_dir}")
+		message(STATUS "PipeWirePatch: will install to ${_sc_ext_dir}")
 	endif()
 endif()
