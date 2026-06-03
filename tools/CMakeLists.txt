@@ -16,3 +16,6 @@ set_property(TARGET lint PROPERTY FOLDER Util)
 set_property(TARGET format PROPERTY FOLDER Util)
 set_property(TARGET lintall PROPERTY FOLDER Util)
 set_property(TARGET formatall PROPERTY FOLDER Util)
+
+# Experimental, opt-in sclang extension (PipeWire graph control)
+add_subdirectory(pipewire_patch)
