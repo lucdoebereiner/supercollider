@@ -17,6 +17,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$HERE/PipeWirePatch.sc"
+HELP_SRC="$HERE/HelpSource"
 SUBDIR="PipeWirePatch"
 MODE="symlink"
 SCOPE="user"
@@ -66,11 +67,15 @@ fi
 
 mkdir -p "$DEST"
 rm -f "$DEST/PipeWirePatch.sc"
+rm -rf "$DEST/HelpSource"
 if [ "$MODE" = copy ]; then
 	cp "$SRC" "$DEST/PipeWirePatch.sc"
-	echo "copied   -> $DEST/PipeWirePatch.sc"
+	[ -d "$HELP_SRC" ] && cp -r "$HELP_SRC" "$DEST/HelpSource"
+	echo "copied   -> $DEST/PipeWirePatch.sc (+ HelpSource)"
 else
 	ln -s "$SRC" "$DEST/PipeWirePatch.sc"
-	echo "symlinked -> $DEST/PipeWirePatch.sc -> $SRC"
+	[ -d "$HELP_SRC" ] && ln -s "$HELP_SRC" "$DEST/HelpSource"
+	echo "symlinked -> $DEST/PipeWirePatch.sc -> $SRC (+ HelpSource)"
 fi
 echo "Recompile the class library (or restart sclang) to load it."
+echo "Help: search for 'PipeWirePatch' in the Help browser (re-index help if needed)."

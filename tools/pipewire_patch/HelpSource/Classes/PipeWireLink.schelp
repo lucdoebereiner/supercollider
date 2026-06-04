@@ -1,0 +1,41 @@
+class:: PipeWireLink
+summary:: A connection between two ports on the PipeWire graph
+categories:: External Control>PipeWire
+related:: Classes/PipeWire, Classes/PipeWirePatch, Classes/PipeWirePort
+
+description::
+
+A value object describing one link (an output port connected to an input port),
+as returned by link::Classes/PipeWire#*links:: and
+link::Classes/PipeWirePatch#-links::. Remove it with
+link::Classes/PipeWire#*disconnectLink:: using its link::#-id::.
+
+ClassMethods::
+
+method:: new
+argument:: id
+argument:: output
+argument:: input
+returns:: a PipeWireLink.
+
+InstanceMethods::
+
+method:: id
+The PipeWire link id (an link::Classes/Integer::), stable for the life of the link.
+
+method:: output
+The full code::"node:port":: name of the output (source) port.
+
+method:: input
+The full code::"node:port":: name of the input (destination) port.
+
+Examples::
+
+code::
+PipeWire.links.do { |lk|
+    "% -> %  [id %]".format(lk.output, lk.input, lk.id).postln;
+};
+
+// remove the first link:
+PipeWire.links.first !? { |lk| PipeWire.disconnectLink(lk.id) };
+::

@@ -1,0 +1,232 @@
+class:: PipeWirePatch
+summary:: Route a SuperCollider server's PipeWire client to other nodes on the graph
+categories:: External Control>PipeWire
+related:: Classes/PipeWire, Classes/PipeWirePort, Classes/PipeWireLink, Classes/Server
+
+description::
+
+A convenience wrapper around link::Classes/PipeWire:: bound to one
+link::Classes/Server::'s PipeWire client. It locates that server's playback and
+capture nodes and lets you connect/disconnect them to other clients on the
+PipeWire graph.
+
+This pairs with the local experimental native PipeWire backend for scsynth
+(strong::-DAUDIOAPI=pipewire::), which names each server's nodes
+code::"<clientName> playback":: / code::"<clientName> capture":: and groups them
+under code::application.name = <clientName>::. The client name comes from
+link::Classes/ServerOptions#-device::. Give each server a distinct device string
+and you can target several servers independently.
+
+subsection:: Requirements
+
+list::
+## code::pw-link:: on PATH (from the emphasis::pipewire:: / emphasis::pipewire-utils:: package).
+## scsynth built with the experimental PipeWire backend.
+::
+
+subsection:: Naming
+
+Set the client name strong::before:: booting:
+
+code::
+s.options.device = "scMain";   // names the nodes "scMain playback" / "scMain capture"
+s.boot;
+::
+
+A bare device string is the client name (JACK-style); a string of the form
+code::"name:target":: also targets a specific sink/source. See the backend's
+strong::-H:: documentation.
+
+ClassMethods::
+
+method:: new
+Create a patch bound to a server (or a bare client-name string).
+
+argument:: server
+A link::Classes/Server:: (the client name is derived from its
+link::Classes/ServerOptions#-device::), or a link::Classes/String:: used
+directly as the client name. Defaults to link::Classes/Server#*default::.
+
+returns:: a PipeWirePatch.
+
+InstanceMethods::
+
+subsection:: Information
+
+method:: server
+The bound link::Classes/Server::, or code::nil:: if constructed from a name string.
+
+method:: clientName
+The PipeWire client name (the code::application.name:: of both nodes).
+
+method:: outNodeName
+method:: inNodeName
+The code::node.name:: of the playback / capture node
+(code::"<clientName> playback":: / code::"<clientName> capture"::).
+
+method:: outputs
+The server's output ports (its DSP outputs), in channel order.
+returns:: an Array of link::Classes/PipeWirePort::. code::outputs[0]:: is channel 0.
+
+method:: inputs
+The server's capture input ports (its DSP inputs), in channel order.
+returns:: an Array of link::Classes/PipeWirePort::.
+
+method:: monitors
+The capture node's monitor output ports (a copy of what was captured).
+returns:: an Array of link::Classes/PipeWirePort::.
+
+method:: numOutputs
+method:: numInputs
+The number of output / input channels (code::== outputs.size:: / code::inputs.size::).
+returns:: an link::Classes/Integer::.
+
+method:: links
+All links touching either of this client's nodes.
+returns:: an Array of link::Classes/PipeWireLink::.
+
+method:: report
+Post a readable summary (nodes, ports, links) to the post window.
+
+subsection:: Bulk routing
+
+All routing methods block until pw-link returns.
+
+method:: connectOutputsTo
+Connect this server's outputs to a destination's inputs, pairing ports in channel
+order (the destination wraps if it has fewer ports).
+
+argument:: target
+A node-name link::Classes/String::, a link::Classes/Server::, a PipeWirePatch, a
+link::Classes/PipeWirePort::, or an link::Classes/Array:: of any of those.
+
+returns:: the number of links made (an link::Classes/Integer::).
+
+method:: connectInputsFrom
+Connect a source's outputs into this server's capture inputs (paired in channel order).
+
+argument:: source
+A node-name link::Classes/String::, link::Classes/Server::, PipeWirePatch,
+link::Classes/PipeWirePort::, or link::Classes/Array:: thereof.
+
+returns:: an link::Classes/Integer::.
+
+method:: disconnectOutputs
+method:: disconnectInputs
+Remove all links from this client's output ports / into its input ports.
+returns:: the number of links removed.
+
+method:: disconnectAll
+Remove every link touching either node.
+returns:: the number of links removed.
+
+subsection:: Single port-to-port routing (by channel index)
+
+method:: connectOutput
+Connect this server's output channel code::srcIndex:: to a single input channel
+of code::target::.
+
+argument:: srcIndex
+The output channel index on this server.
+argument:: target
+The destination (same types as link::#-connectOutputsTo::).
+argument:: dstIndex
+The input channel index on the destination. Defaults to code::srcIndex::.
+returns:: a link::Classes/Boolean:: (false, with a warning, if an index is out of range).
+
+method:: connectInput
+Connect a single output channel of code::source:: into this server's input
+channel code::dstIndex::.
+
+argument:: dstIndex
+The input channel index on this server.
+argument:: source
+The source (same types as link::#-connectInputsFrom::).
+argument:: srcIndex
+The output channel index on the source. Defaults to code::dstIndex::.
+returns:: a link::Classes/Boolean::.
+
+method:: disconnectOutput
+argument:: srcIndex
+argument:: target
+argument:: dstIndex
+Remove the single link our output code::srcIndex:: -> code::target:: input
+code::dstIndex:: (defaults to code::srcIndex::).
+returns:: a link::Classes/Boolean::.
+
+method:: disconnectInput
+argument:: dstIndex
+argument:: source
+argument:: srcIndex
+Remove the single link code::source:: output code::srcIndex:: (defaults to
+code::dstIndex::) -> our input code::dstIndex::.
+returns:: a link::Classes/Boolean::.
+
+Examples::
+
+subsection:: Inspect
+
+code::
+s.options.device = "scMain";
+s.boot;
+
+p = PipeWirePatch(s);
+p.report;                       // nodes, ports, links
+
+p.numOutputs;                   // 2 (or whatever -o was)
+p.outputs;                      // [ PipeWirePort(...output_AUX0...), ... ]
+p.outputs[0].fullName;          // "scMain playback:output_AUX0"
+p.inputs;                       // capture input ports
+p.links;                        // links touching scMain
+::
+
+subsection:: Connect to a hardware sink/source
+
+code::
+// Find a sink/source node name (see also PipeWire.nodes):
+~sink = PipeWire.inPorts.detect { |x| x.node.contains("pro-output") }.node;
+~src  = PipeWire.outPorts.detect { |x| x.node.contains("pro-input") }.node;
+
+// How many channels does the sink expose?
+PipeWire.inPortsOf(~sink).size;
+
+// Bulk: all of our outputs -> the sink (channel-ordered):
+p.connectOutputsTo(~sink);
+p.connectInputsFrom(~src);
+
+// Tear down:
+p.disconnectOutputs;
+p.disconnectAll;
+::
+
+subsection:: Single channels by index
+
+code::
+// our output 0 -> sink input 1
+p.connectOutput(0, ~sink, 1);
+// our output 1 -> sink input 3
+p.connectOutput(1, ~sink, 3);
+// source output 2 -> our input 0
+p.connectInput(0, ~src, 2);
+
+// remove a specific pair:
+p.disconnectOutput(0, ~sink, 1);
+::
+
+subsection:: Patch one server into another (multiple servers)
+
+code::
+// Two servers with distinct names:
+~a = Server(\a, NetAddr("127.0.0.1", 57111), ServerOptions.new.device_("scA").numOutputBusChannels_(2));
+~b = Server(\b, NetAddr("127.0.0.1", 57112), ServerOptions.new.device_("scB").numInputBusChannels_(2));
+~a.boot; ~b.boot;
+
+~pa = PipeWirePatch(~a);
+~pb = PipeWirePatch(~b);
+
+// route server A's outputs into server B's capture inputs:
+~pa.connectOutputsTo(~pb);          // or ~pb.connectInputsFrom(~pa)
+
+// a single channel between them:
+~pa.connectOutput(0, ~pb, 1);
+::
