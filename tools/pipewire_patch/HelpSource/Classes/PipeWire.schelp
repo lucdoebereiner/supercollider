@@ -1,0 +1,121 @@
+class:: PipeWire
+summary:: Query and edit the PipeWire graph from sclang (via pw-link)
+categories:: External Control>PipeWire
+related:: Classes/PipeWirePatch, Classes/PipeWirePort, Classes/PipeWireLink
+
+description::
+
+Class-side access to the PipeWire graph: list nodes, ports and links, and
+create/destroy links between ports. It is a thin, pure-sclang wrapper around the
+emphasis::pw-link:: command-line tool, called through
+link::Classes/String#-unixCmdGetStdOut:: (blocking, so operations happen in
+order). No C++ primitives are needed — the PipeWire graph is managed
+out-of-process, so any client may rewire it.
+
+For a server-oriented interface (route a specific link::Classes/Server::'s
+client), see link::Classes/PipeWirePatch::.
+
+subsection:: Requirements
+
+code::pw-link:: must be on PATH (from the emphasis::pipewire:: /
+emphasis::pipewire-utils:: package).
+
+ClassMethods::
+
+private:: prCmdString, prRun, prSystem, prQuote, prParsePorts, prIsLinkLine, prSplitPort, prPortNumber, prSortPorts, prCutToken, prTrim, prIsWS
+
+method:: program
+Get/set the command used (default code::"pw-link"::).
+
+method:: remoteName
+Get/set the PipeWire remote daemon name (passed as code::--remote=NAME::).
+code::nil:: (default) uses the default daemon. Use this to address a second
+PipeWire daemon.
+
+subsection:: Queries
+
+method:: outPorts
+method:: inPorts
+All output / input ports on the graph.
+returns:: an Array of link::Classes/PipeWirePort::.
+
+method:: ports
+code::outPorts ++ inPorts::.
+
+method:: nodes
+The distinct node names on the graph, sorted.
+returns:: an Array of link::Classes/String::.
+
+method:: portsOf
+All ports (both directions) belonging to a node.
+argument:: nodeName
+The code::node.name:: string.
+returns:: an Array of link::Classes/PipeWirePort::.
+
+method:: outPortsOf
+method:: inPortsOf
+A node's output / input ports in strong::channel order:: (index 0 = first
+channel). code::.size:: is the channel count — use these to index and count any
+client's ports.
+argument:: nodeName
+The code::node.name:: string.
+returns:: an Array of link::Classes/PipeWirePort::.
+
+method:: links
+All links on the graph (deduplicated, each with a stable id).
+returns:: an Array of link::Classes/PipeWireLink::.
+
+method:: report
+Post a readable summary of nodes (with out/in port counts) and links.
+
+subsection:: Operations
+
+All operations block until pw-link returns, and post a warning on failure.
+
+method:: connect
+Create a link from one output port to one input port.
+argument:: outName
+The full code::"node:port":: name of the output port (e.g. from
+link::Classes/PipeWirePort#-fullName::).
+argument:: inName
+The full code::"node:port":: name of the input port.
+returns:: a link::Classes/Boolean::.
+
+method:: disconnect
+Remove the link between a specific output and input port.
+argument:: outName
+argument:: inName
+returns:: a link::Classes/Boolean::.
+
+method:: disconnectLink
+Remove a link by its id.
+argument:: linkId
+The link id (see link::Classes/PipeWireLink#-id::).
+returns:: a link::Classes/Boolean::.
+
+Examples::
+
+code::
+PipeWire.report;                 // whole graph
+PipeWire.nodes;                  // node names
+
+// How many channels does a node have?
+PipeWire.outPortsOf("alsa_input.usb-...pro-input-0").size;
+
+// A specific port object:
+~p = PipeWire.outPorts.detect { |x| x.node.contains("pro-input") };
+~p.fullName;
+
+// Low-level connect / disconnect (full port names):
+PipeWire.connect("scMain playback:output_AUX0",
+    "alsa_output.usb-...pro-output-0:playback_AUX0");
+
+// Remove by id:
+PipeWire.links.do { |lk| lk.postln };
+PipeWire.disconnectLink(113);
+
+// Address a second PipeWire daemon:
+PipeWire.remoteName = "my-remote";
+PipeWire.nodes;
+PipeWire.remoteName = nil;
+::

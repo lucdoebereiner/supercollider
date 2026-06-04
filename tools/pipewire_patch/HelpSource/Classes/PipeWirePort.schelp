@@ -1,0 +1,48 @@
+class:: PipeWirePort
+summary:: A single port on the PipeWire graph
+categories:: External Control>PipeWire
+related:: Classes/PipeWire, Classes/PipeWirePatch, Classes/PipeWireLink
+
+description::
+
+A value object describing one PipeWire port, as returned by
+link::Classes/PipeWire#*outPorts:: / link::Classes/PipeWire#*inPorts:: and the
+port accessors of link::Classes/PipeWirePatch::. Pass link::#-fullName:: to
+link::Classes/PipeWire#*connect:: / link::Classes/PipeWire#*disconnect::.
+
+ClassMethods::
+
+method:: new
+argument:: id
+argument:: fullName
+argument:: node
+argument:: port
+argument:: direction
+returns:: a PipeWirePort.
+
+InstanceMethods::
+
+method:: id
+The PipeWire port id (an link::Classes/Integer::).
+
+method:: fullName
+The full code::"node:port":: name, as accepted by pw-link.
+
+method:: node
+The owning node's code::node.name::.
+
+method:: port
+The port name within the node (e.g. code::"output_AUX0"::).
+
+method:: direction
+code::\output:: or code::\input::.
+
+Examples::
+
+code::
+~p = PipeWire.outPorts.first;
+~p.node;
+~p.port;
+~p.fullName;
+~p.direction;
+::
