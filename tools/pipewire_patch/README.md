@@ -40,8 +40,13 @@ PipeWire.nodes;        // distinct node names
 PipeWire.outPorts;     // all output ports
 PipeWire.inPorts;      // all input ports
 PipeWire.links;        // all links (deduped, with stable ids)
-PipeWire.report;       // pretty-print nodes + links
+PipeWire.report;       // pretty-print nodes (with out/in counts) + links
 PipeWire.portsOf("alsa_output.usb-...pro-output-0");
+
+// Any node's ports in channel order — `.size` is the channel count,
+// `[i]` is channel i. Works for any client, so you can index + count them:
+PipeWire.outPortsOf("alsa_input.usb-...pro-input-0");   // .size = how many
+PipeWire.inPortsOf("alsa_output.usb-...pro-output-0");
 
 // Low-level link ops (blocking, return Boolean):
 PipeWire.connect("ScA playback:output_AUX0", "alsa_output...:playback_AUX0");
@@ -53,9 +58,11 @@ s.options.device = "ScA";       // set BEFORE s.boot so the nodes get this name
 ~a = PipeWirePatch(s);          // or PipeWirePatch("ScA") by name
 ~a.report;
 ~a.outputs; ~a.inputs; ~a.monitors;   // channel-ordered PipeWirePort arrays
+~a.numOutputs; ~a.numInputs;           // channel counts (== .outputs.size etc.)
+~a.outputs[0];                         // a specific channel's PipeWirePort
 ~a.links;                              // links touching either of its nodes
 
-// Routing — ports paired in channel order (target wraps if it has fewer).
+// Bulk routing — ports paired in channel order (target wraps if it has fewer).
 // Returns the number of links made/removed.
 ~a.connectOutputsTo("alsa_output.usb-...pro-output-0");  // node name
 ~a.connectOutputsTo(~b);          // another PipeWirePatch or Server
@@ -63,6 +70,14 @@ s.options.device = "ScA";       // set BEFORE s.boot so the nodes get this name
 ~a.disconnectOutputs;
 ~a.disconnectInputs;
 ~a.disconnectAll;
+
+// Single port-to-port routing by channel index (returns Boolean).
+// dstIndex/srcIndex default to the other index when omitted.
+~a.connectOutput(0, "alsa_output.usb-...pro-output-0", 1); // our out 0 -> sink in 1
+~a.connectOutput(1, ~b, 3);          // our out 1 -> ~b's input 3
+~a.connectInput(0, "alsa_input.usb-...pro-input-0", 2);    // src out 2 -> our in 0
+~a.disconnectOutput(0, "alsa_output.usb-...pro-output-0", 1);
+~a.disconnectInput(0, ~b, 2);
 
 // Multiple servers — distinct device names, target each independently:
 // (~b = PipeWirePatch(s2); ~a.connectOutputsTo(~b);)
