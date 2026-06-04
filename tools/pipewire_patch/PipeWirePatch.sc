@@ -73,6 +73,11 @@ PipeWire {
 		^this.ports.select { |p| p.node == nodeName }
 	}
 
+	// A node's output / input ports in channel order (index 0 = first
+	// channel). `.size` is the channel count. Each call shells out once.
+	*outPortsOf { |nodeName| ^this.prSortPorts(this.outPorts.select { |p| p.node == nodeName }) }
+	*inPortsOf  { |nodeName| ^this.prSortPorts(this.inPorts.select { |p| p.node == nodeName }) }
+
 	*links {
 		var lines = this.prRun(["-I", "-l"]).split($\n);
 		var ctxName, byId = Dictionary.new;
@@ -122,11 +127,16 @@ PipeWire {
 	}
 
 	*report {
+		var outs = this.outPorts, ins = this.inPorts, links = this.links, nodes;
+		nodes = (outs ++ ins).collect(_.node).as(Set).asArray.sort;
 		"PipeWire graph (remote: %)".format(remoteName ? "default").postln;
-		"  nodes:".postln;
-		this.nodes.do { |n| ("    " ++ n).postln };
-		"  links:".postln;
-		this.links.do { |lk|
+		"  nodes (out/in port counts):".postln;
+		nodes.do { |n|
+			("    % [out: %, in: %]".format(
+				n, outs.count { |p| p.node == n }, ins.count { |p| p.node == n })).postln
+		};
+		"  links (%):".format(links.size).postln;
+		links.do { |lk|
 			("    " ++ lk.output ++ "  ->  " ++ lk.input ++ "   [id " ++ lk.id ++ "]").postln
 		};
 		^this
@@ -201,6 +211,10 @@ PipeWire {
 		^if(i == (port.size - 1)) { -1 } { port.copyRange(i + 1, port.size - 1).asInteger }
 	}
 
+	*prSortPorts { |ports|
+		^ports.sort { |a, b| this.prPortNumber(a.port) < this.prPortNumber(b.port) }
+	}
+
 	// Cut the first whitespace-delimited token: returns [token, trimmedRemainder].
 	*prCutToken { |str|
 		var s = this.prTrim(str), i = 0;
@@ -271,26 +285,18 @@ PipeWirePatch {
 	outNodeName { ^clientName ++ " playback" }
 	inNodeName  { ^clientName ++ " capture" }
 
-	// our server's output ports (its DSP outputs), channel-ordered
-	outputs {
-		var n = this.outNodeName;
-		^PipeWire.outPorts.select { |p| p.node == n }
-			.sort { |a, b| PipeWire.prPortNumber(a.port) < PipeWire.prPortNumber(b.port) }
-	}
+	// our server's output ports (its DSP outputs), channel-ordered.
+	// index 0 = first channel; `.size` is the channel count.
+	outputs { ^PipeWire.outPortsOf(this.outNodeName) }
 
-	// our server's capture input ports (its DSP inputs), channel-ordered
-	inputs {
-		var n = this.inNodeName;
-		^PipeWire.inPorts.select { |p| p.node == n }
-			.sort { |a, b| PipeWire.prPortNumber(a.port) < PipeWire.prPortNumber(b.port) }
-	}
+	// our server's capture input ports (its DSP inputs), channel-ordered.
+	inputs { ^PipeWire.inPortsOf(this.inNodeName) }
 
 	// the capture node's monitor output ports (a copy of what was captured)
-	monitors {
-		var n = this.inNodeName;
-		^PipeWire.outPorts.select { |p| p.node == n }
-			.sort { |a, b| PipeWire.prPortNumber(a.port) < PipeWire.prPortNumber(b.port) }
-	}
+	monitors { ^PipeWire.outPortsOf(this.inNodeName) }
+
+	numOutputs { ^this.outputs.size }
+	numInputs  { ^this.inputs.size }
 
 	// all links touching either of our nodes
 	links {
@@ -315,6 +321,48 @@ PipeWirePatch {
 	// Connect a source's outputs into this server's capture inputs.
 	connectInputsFrom { |source|
 		^this.prZipConnect(this.prResolveOutputs(source), this.inputs, "source")
+	}
+
+	// --- single port-to-port routing by channel index -----------------
+	// Connect our output channel `srcIndex` to target's input channel
+	// `dstIndex` (defaults to srcIndex). Returns Boolean.
+	connectOutput { |srcIndex, target, dstIndex|
+		^this.prOne(\connect, this.outputs, srcIndex, this.prResolveInputs(target),
+			dstIndex ? srcIndex, "output", "destination input")
+	}
+
+	// Connect source's output channel `srcIndex` (defaults to dstIndex) into
+	// our input channel `dstIndex`. Returns Boolean.
+	connectInput { |dstIndex, source, srcIndex|
+		^this.prOne(\connect, this.prResolveOutputs(source), srcIndex ? dstIndex,
+			this.inputs, dstIndex, "source output", "input")
+	}
+
+	disconnectOutput { |srcIndex, target, dstIndex|
+		^this.prOne(\disconnect, this.outputs, srcIndex, this.prResolveInputs(target),
+			dstIndex ? srcIndex, "output", "destination input")
+	}
+
+	disconnectInput { |dstIndex, source, srcIndex|
+		^this.prOne(\disconnect, this.prResolveOutputs(source), srcIndex ? dstIndex,
+			this.inputs, dstIndex, "source output", "input")
+	}
+
+	prOne { |op, srcs, si, dsts, di, srcLabel, dstLabel|
+		var s = srcs[si], d = dsts[di];
+		if(s.isNil) {
+			("PipeWirePatch: no % at index % (have %)".format(srcLabel, si, srcs.size)).warn;
+			^false
+		};
+		if(d.isNil) {
+			("PipeWirePatch: no % at index % (have %)".format(dstLabel, di, dsts.size)).warn;
+			^false
+		};
+		^if(op == \connect) {
+			PipeWire.connect(s.fullName, d.fullName)
+		} {
+			PipeWire.disconnect(s.fullName, d.fullName)
+		}
 	}
 
 	prZipConnect { |srcs, dsts, what|
@@ -372,7 +420,7 @@ PipeWirePatch {
 		{ target.isKindOf(PipeWirePatch) } { target.inputs }
 		{ target.isKindOf(Server) } { PipeWirePatch(target).inputs }
 		{ target.isKindOf(PipeWirePort) } { [target] }
-		{ target.isKindOf(String) } { PipeWire.inPorts.select { |p| p.node == target } }
+		{ target.isKindOf(String) } { PipeWire.inPortsOf(target) }
 		{ target.isKindOf(SequenceableCollection) } {
 			target.collect { |t| this.prResolveInputs(t) }.flatten
 		}
@@ -384,7 +432,7 @@ PipeWirePatch {
 		{ source.isKindOf(PipeWirePatch) } { source.outputs }
 		{ source.isKindOf(Server) } { PipeWirePatch(source).outputs }
 		{ source.isKindOf(PipeWirePort) } { [source] }
-		{ source.isKindOf(String) } { PipeWire.outPorts.select { |p| p.node == source } }
+		{ source.isKindOf(String) } { PipeWire.outPortsOf(source) }
 		{ source.isKindOf(SequenceableCollection) } {
 			source.collect { |t| this.prResolveOutputs(t) }.flatten
 		}
