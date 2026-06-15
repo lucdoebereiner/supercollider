@@ -281,12 +281,19 @@ bool SC_PipeWireDriver::createOutputStream(int numChannels) {
     // JACK single-client feel); the node name/description carry the direction
     // suffix so the two boxes are distinguishable.
     const std::string nodeName = mClientName + " playback";
+    // NODE_ALWAYS_PROCESS keeps the node in the data loop even with zero links:
+    // PipeWire attaches it to its Dummy-Driver, which keeps ticking the process
+    // callback at the quantum rate. Since the whole scsynth engine (DSP + OSC
+    // scheduling) is advanced from that callback, this is what keeps the server
+    // running when it isn't wired to anything -- the JACK/Reaper "always alive"
+    // behaviour rather than freezing on disconnect.
     pw_properties* props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
                                              PW_KEY_MEDIA_CATEGORY, "Playback",
                                              PW_KEY_MEDIA_ROLE, "DSP",
                                              PW_KEY_APP_NAME, mClientName.c_str(),
                                              PW_KEY_NODE_NAME, nodeName.c_str(),
                                              PW_KEY_NODE_DESCRIPTION, nodeName.c_str(),
+                                             PW_KEY_NODE_ALWAYS_PROCESS, "true",
                                              nullptr);
     if (!mOutTarget.empty())
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, mOutTarget.c_str());
@@ -345,12 +352,14 @@ bool SC_PipeWireDriver::createInputStream(int numChannels) {
     // See createOutputStream: same PW_KEY_APP_NAME so the capture node groups
     // with the playback node as one client; "capture" suffix on the node name.
     const std::string nodeName = mClientName + " capture";
+    // See createOutputStream: keep the capture node alive when unlinked too.
     pw_properties* props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
                                              PW_KEY_MEDIA_CATEGORY, "Capture",
                                              PW_KEY_MEDIA_ROLE, "DSP",
                                              PW_KEY_APP_NAME, mClientName.c_str(),
                                              PW_KEY_NODE_NAME, nodeName.c_str(),
                                              PW_KEY_NODE_DESCRIPTION, nodeName.c_str(),
+                                             PW_KEY_NODE_ALWAYS_PROCESS, "true",
                                              nullptr);
     if (!mInTarget.empty())
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, mInTarget.c_str());
