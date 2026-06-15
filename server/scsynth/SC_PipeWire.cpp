@@ -34,6 +34,7 @@
 #include <spa/pod/parser.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cmath>
@@ -114,6 +115,9 @@ public:
     void OnInStateChanged(enum pw_stream_state old, enum pw_stream_state state, const char* error);
     void OnOutParamChanged(uint32_t id, const struct spa_pod* param);
     void OnInParamChanged(uint32_t id, const struct spa_pod* param);
+    // Core-level error: the only signal that distinguishes "the PipeWire daemon
+    // went away" from a recoverable per-stream hiccup. See OnCoreError.
+    void OnCoreError(uint32_t id, int seq, int res, const char* message);
 
 protected:
     bool DriverSetup(int* outNumSamplesPerCallback, double* outSampleRate) override;
@@ -121,8 +125,14 @@ protected:
     bool DriverStop() override;
 
 private:
-    // PipeWire objects
+    // PipeWire objects. We create the context/core explicitly (rather than
+    // letting pw_stream_new_simple hide them) so we can listen for core-level
+    // errors -- that is how we tell a dead daemon apart from a stream that just
+    // needs reconnecting.
     struct pw_thread_loop* mLoop = nullptr;
+    struct pw_context* mContext = nullptr;
+    struct pw_core* mCore = nullptr;
+    struct spa_hook mCoreListener {};
     struct pw_stream* mOutStream = nullptr;
     struct pw_stream* mInStream = nullptr;
     struct spa_hook mOutListener {};
@@ -190,8 +200,29 @@ private:
 
     bool createOutputStream(int numChannels);
     bool createInputStream(int numChannels);
+    // (Re)connect an existing stream with our standard format/flags. Factored
+    // out of stream creation so reconnectStream can reuse it. Returns false if
+    // pw_stream_connect itself fails.
+    bool connectStream(struct pw_stream* stream, enum pw_direction dir, int numChannels);
+    // Best-effort recovery after a stream drops to ERROR/UNCONNECTED for a
+    // reason other than daemon death: disconnect and reconnect, bounded by
+    // kMaxReconnectAttempts so a permanently-failing stream can't spin. Never
+    // tears the server down -- the engine keeps running (the always-process
+    // node stays ticking on the Dummy-Driver), JACK-style, instead of quitting.
+    void reconnectStream(bool isOutput);
     void tryCompleteSetup();
     void signalSetup();
+
+    // Saved channel counts so reconnectStream can rebuild the format.
+    int mOutChannels = 0;
+    int mInChannels = 0;
+    // Bounded reconnect bookkeeping (reset to 0 once a stream reaches
+    // STREAMING again). mReconnecting guards against the synchronous
+    // UNCONNECTED that our own pw_stream_disconnect emits re-entering here.
+    int mOutReconnectAttempts = 0;
+    int mInReconnectAttempts = 0;
+    bool mReconnecting = false;
+    static constexpr int kMaxReconnectAttempts = 10;
     // Adapt to a quantum change from PipeWire. Called on the RT data thread
     // from RunOutput (the ring consumer) only. Returns false if the new
     // quantum is unworkable (zero, > kMaxAcceptableQuantum, or not an
@@ -247,6 +278,17 @@ static const struct pw_stream_events kInEvents = [] {
     return e;
 }();
 
+static void sc_pw_core_error_cb(void* userdata, uint32_t id, int seq, int res, const char* message) {
+    static_cast<SC_PipeWireDriver*>(userdata)->OnCoreError(id, seq, res, message);
+}
+
+static const struct pw_core_events kCoreEvents = [] {
+    pw_core_events e = {};
+    e.version = PW_VERSION_CORE_EVENTS;
+    e.error = sc_pw_core_error_cb;
+    return e;
+}();
+
 // =====================================================================
 // Construction / destruction
 
@@ -264,6 +306,15 @@ SC_PipeWireDriver::~SC_PipeWireDriver() {
             pw_stream_disconnect(mOutStream);
             pw_stream_destroy(mOutStream);
             mOutStream = nullptr;
+        }
+        if (mCore) {
+            spa_hook_remove(&mCoreListener);
+            pw_core_disconnect(mCore);
+            mCore = nullptr;
+        }
+        if (mContext) {
+            pw_context_destroy(mContext);
+            mContext = nullptr;
         }
         pw_thread_loop_unlock(mLoop);
         pw_thread_loop_stop(mLoop);
@@ -315,37 +366,39 @@ bool SC_PipeWireDriver::createOutputStream(int numChannels) {
         pw_properties_set(props, PW_KEY_NODE_FORCE_QUANTUM, qStr);
     }
 
-    mOutStream = pw_stream_new_simple(pw_thread_loop_get_loop(mLoop), nodeName.c_str(), props,
-                                      &kOutEvents, this);
+    mOutChannels = numChannels;
+    mOutStream = pw_stream_new(mCore, nodeName.c_str(), props);
     if (!mOutStream)
         return false;
+    pw_stream_add_listener(mOutStream, &mOutListener, &kOutEvents, this);
 
+    return connectStream(mOutStream, PW_DIRECTION_OUTPUT, numChannels);
+}
+
+// Build our standard F32 / AUX-mapped format and connect the stream. Used both
+// for first connect and for reconnectStream. Without an explicit channel
+// position array, pipewire defaults to stereo FL/FR and silently narrows any
+// larger channel count down to two during format negotiation (qpwgraph then
+// only shows output_FL/FR). Mapping every channel to AUX0..AUXN-1 treats them
+// as "arbitrary, no surround meaning" — same idea as JACK's out_1..out_N ports.
+bool SC_PipeWireDriver::connectStream(struct pw_stream* stream, enum pw_direction dir, int numChannels) {
     uint8_t buffer[1024];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
     spa_audio_info_raw info = {};
     info.format = SPA_AUDIO_FORMAT_F32;
     info.channels = uint32_t(numChannels);
     info.rate = mPreferredSampleRate; // 0 == let pipewire pick the graph rate
-    // Without an explicit channel position array, pipewire defaults to
-    // stereo FL/FR and silently narrows any larger channel count down to
-    // two during format negotiation (qpwgraph then only shows output_FL
-    // and output_FR). Map every channel to AUX0..AUXN-1 so the channels
-    // are treated as "arbitrary, no surround meaning" — same idea as
-    // JACK's out_1..out_N ports.
     const int nCh = sc_min(numChannels, int(SPA_AUDIO_MAX_CHANNELS));
     for (int i = 0; i < nCh; ++i)
         info.position[i] = uint32_t(SPA_AUDIO_CHANNEL_AUX0 + i);
     const struct spa_pod* params[1];
     params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
 
-    if (pw_stream_connect(mOutStream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
-                          (enum pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS
-                                                 | PW_STREAM_FLAG_RT_PROCESS),
-                          params, 1)
-        < 0) {
-        return false;
-    }
-    return true;
+    return pw_stream_connect(stream, dir, PW_ID_ANY,
+                             (enum pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS
+                                                    | PW_STREAM_FLAG_RT_PROCESS),
+                             params, 1)
+        >= 0;
 }
 
 bool SC_PipeWireDriver::createInputStream(int numChannels) {
@@ -370,33 +423,13 @@ bool SC_PipeWireDriver::createInputStream(int numChannels) {
         pw_properties_set(props, PW_KEY_NODE_FORCE_QUANTUM, qStr);
     }
 
-    mInStream = pw_stream_new_simple(pw_thread_loop_get_loop(mLoop), nodeName.c_str(), props,
-                                     &kInEvents, this);
+    mInChannels = numChannels;
+    mInStream = pw_stream_new(mCore, nodeName.c_str(), props);
     if (!mInStream)
         return false;
+    pw_stream_add_listener(mInStream, &mInListener, &kInEvents, this);
 
-    uint8_t buffer[1024];
-    struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-    spa_audio_info_raw info = {};
-    info.format = SPA_AUDIO_FORMAT_F32;
-    info.channels = uint32_t(numChannels);
-    info.rate = mPreferredSampleRate;
-    // See createOutputStream: map each channel to AUX0..AUXN-1 so
-    // pipewire doesn't silently narrow the count down to stereo.
-    const int nCh = sc_min(numChannels, int(SPA_AUDIO_MAX_CHANNELS));
-    for (int i = 0; i < nCh; ++i)
-        info.position[i] = uint32_t(SPA_AUDIO_CHANNEL_AUX0 + i);
-    const struct spa_pod* params[1];
-    params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
-
-    if (pw_stream_connect(mInStream, PW_DIRECTION_INPUT, PW_ID_ANY,
-                          (enum pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS
-                                                 | PW_STREAM_FLAG_RT_PROCESS),
-                          params, 1)
-        < 0) {
-        return false;
-    }
-    return true;
+    return connectStream(mInStream, PW_DIRECTION_INPUT, numChannels);
 }
 
 // =====================================================================
@@ -440,6 +473,22 @@ bool SC_PipeWireDriver::DriverSetup(int* outNumSamples, double* outSampleRate) {
     }
 
     pw_thread_loop_lock(mLoop);
+
+    // Explicit context + core so we get a core error listener (daemon death
+    // detection). Both streams share this one connection to the daemon.
+    mContext = pw_context_new(pw_thread_loop_get_loop(mLoop), nullptr, 0);
+    if (!mContext) {
+        scprintf("%s: pw_context_new failed\n", kPwDriverIdent);
+        pw_thread_loop_unlock(mLoop);
+        return false;
+    }
+    mCore = pw_context_connect(mContext, nullptr, 0);
+    if (!mCore) {
+        scprintf("%s: pw_context_connect failed (is the PipeWire daemon running?)\n", kPwDriverIdent);
+        pw_thread_loop_unlock(mLoop);
+        return false;
+    }
+    pw_core_add_listener(mCore, &mCoreListener, &kCoreEvents, this);
 
     if (!createOutputStream(numOutputs)) {
         scprintf("%s: failed to create output stream\n", kPwDriverIdent);
@@ -548,21 +597,73 @@ bool SC_PipeWireDriver::DriverStop() {
 // =====================================================================
 // State / param event handling
 
+// A stream dropping to ERROR/UNCONNECTED is NOT treated as fatal. Under JACK a
+// client rolls past xruns and only goes down when the server actually shuts
+// down; we mirror that here. Genuine daemon death is handled separately in
+// OnCoreError (it fires -EPIPE on the core). So here we just try to bring the
+// stream back, bounded by kMaxReconnectAttempts, and never quit -- the engine
+// keeps running on the always-process Dummy-Driver in the meantime.
 void SC_PipeWireDriver::OnOutStateChanged(enum pw_stream_state old, enum pw_stream_state state, const char* error) {
     scprintf("%s: out %s -> %s%s%s\n", kPwDriverIdent, pw_stream_state_as_string(old),
              pw_stream_state_as_string(state), error ? " error=" : "", error ? error : "");
+    if (state == PW_STREAM_STATE_STREAMING)
+        mOutReconnectAttempts = 0; // healthy again
     if ((state == PW_STREAM_STATE_ERROR || state == PW_STREAM_STATE_UNCONNECTED) && mStreaming.load()
-        && !mHadShutdown) {
-        mHadShutdown = true;
-        scprintf("%s: lost output stream, asking scsynth to quit\n", kPwDriverIdent);
-        mWorld->hw->mTerminating = true;
-        mWorld->hw->mQuitProgram->post();
-    }
+        && !mHadShutdown && !mReconnecting)
+        reconnectStream(/*isOutput=*/true);
 }
 
 void SC_PipeWireDriver::OnInStateChanged(enum pw_stream_state old, enum pw_stream_state state, const char* error) {
     scprintf("%s: in  %s -> %s%s%s\n", kPwDriverIdent, pw_stream_state_as_string(old),
              pw_stream_state_as_string(state), error ? " error=" : "", error ? error : "");
+    if (state == PW_STREAM_STATE_STREAMING)
+        mInReconnectAttempts = 0;
+    if ((state == PW_STREAM_STATE_ERROR || state == PW_STREAM_STATE_UNCONNECTED) && mStreaming.load()
+        && !mHadShutdown && !mReconnecting)
+        reconnectStream(/*isOutput=*/false);
+}
+
+void SC_PipeWireDriver::reconnectStream(bool isOutput) {
+    struct pw_stream* stream = isOutput ? mOutStream : mInStream;
+    int& attempts = isOutput ? mOutReconnectAttempts : mInReconnectAttempts;
+    const char* dirName = isOutput ? "output" : "input";
+    if (!stream)
+        return;
+    if (attempts >= kMaxReconnectAttempts) {
+        if (attempts == kMaxReconnectAttempts) {
+            attempts++; // log this once, then stay quiet
+            scprintf("%s: %s stream lost; %d reconnect attempts failed. Engine still "
+                     "running -- reconnect it in the patchbay or reboot the server.\n",
+                     kPwDriverIdent, dirName, kMaxReconnectAttempts);
+        }
+        return;
+    }
+    attempts++;
+    scprintf("%s: %s stream lost, reconnecting (attempt %d/%d)\n", kPwDriverIdent, dirName, attempts,
+             kMaxReconnectAttempts);
+    // mReconnecting guards the synchronous UNCONNECTED that pw_stream_disconnect
+    // emits straight back into OnOut/InStateChanged from re-entering here.
+    mReconnecting = true;
+    pw_stream_disconnect(stream);
+    const bool ok = connectStream(stream, isOutput ? PW_DIRECTION_OUTPUT : PW_DIRECTION_INPUT,
+                                  isOutput ? mOutChannels : mInChannels);
+    mReconnecting = false;
+    if (!ok)
+        scprintf("%s: %s reconnect call failed\n", kPwDriverIdent, dirName);
+}
+
+// The PipeWire daemon connection broke (e.g. the daemon was restarted): -EPIPE
+// on the core object. This -- not a per-stream error -- is the real "audio
+// backend went away" signal, so this is the one place we ask scsynth to quit.
+void SC_PipeWireDriver::OnCoreError(uint32_t id, int seq, int res, const char* message) {
+    scprintf("%s: core error id=%u seq=%d res=%d (%s)\n", kPwDriverIdent, id, seq, res,
+             message ? message : "");
+    if (id == PW_ID_CORE && res == -EPIPE && mStreaming.load() && !mHadShutdown) {
+        mHadShutdown = true;
+        scprintf("%s: lost connection to the PipeWire daemon, asking scsynth to quit\n", kPwDriverIdent);
+        mWorld->hw->mTerminating = true;
+        mWorld->hw->mQuitProgram->post();
+    }
 }
 
 void SC_PipeWireDriver::OnOutParamChanged(uint32_t id, const struct spa_pod* param) {
