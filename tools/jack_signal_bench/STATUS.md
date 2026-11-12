@@ -24,8 +24,8 @@ through that process first.
 ## 2026-11-12: rebased onto develop, 0-output support, test harness
 
 - Branch `pipewire-backend-develop` = current `origin/develop` + the
-  backend/bench commits. **Dropped**: the sclang `tools/pipewire_patch`
-  commits and the SC_Jack.cpp measurement patch (section below is now
+  backend/bench commits + the sclang `tools/pipewire_patch` classes.
+  **Dropped**: the SC_Jack.cpp measurement patch (section below is now
   historical; stock SC_Jack.cpp is back). Upstream now has
   `SC_AUDIO_API_WEBAUDIO 7`, so `SC_AUDIO_API_PIPEWIRE` is **8**.
 - **`-o 0` used to abort** ("no output channels requested", then
