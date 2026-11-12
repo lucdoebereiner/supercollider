@@ -21,6 +21,37 @@ There is **no RFC, no upstream PR, no discussion with SC core**. This is a
 private branch experiment. Do not ship anything from here without going
 through that process first.
 
+## 2026-11-12: rebased onto develop, 0-output support, test harness
+
+- Branch `pipewire-backend-develop` = current `origin/develop` + the
+  backend/bench commits. **Dropped**: the sclang `tools/pipewire_patch`
+  commits and the SC_Jack.cpp measurement patch (section below is now
+  historical; stock SC_Jack.cpp is back). Upstream now has
+  `SC_AUDIO_API_WEBAUDIO 7`, so `SC_AUDIO_API_PIPEWIRE` is **8**.
+- **`-o 0` used to abort** ("no output channels requested", then
+  `terminate called without an active exception` from scsynth's generic
+  setup-failure path). The engine is now driven by whichever stream exists
+  (`Drive` enum in SC_PipeWire.cpp):
+  - `Output` (outputs > 0): playback stream drives, capture via SPSC ring (unchanged).
+  - `Input` (`-o 0 -i N`): no playback node; the capture stream's process
+    callback runs the engine and reads its buffer directly (no ring, no
+    added latency).
+  - `ClockOnly` (`-o 0 -i 0`): a hidden 1-channel playback node with
+    `node.autoconnect=false`, never linked, ticks on the Dummy-Driver and
+    writes silence.
+- **Supernova**: still no native backend. `AUDIOAPI=pipewire` builds it
+  against JACK (pipewire-jack); it now builds and passes the harness's smoke
+  tests (boot with 0/2 in/out combos, clean output signal).
+- **Tests**: `tools/pipewire_backend_test/pw_backend_test.py --build build-develop`
+  (39 checks: boot matrix incl. 0 in/out, graph node/port shape, 4-ch output
+  signal, duplex pass-through, input-only, scheduling jitter, 800-synth
+  load with a reference sine, 40x boot/quit, supernova). Routes everything
+  through temporary null sinks / pw-loopback sources, so it is safe to run
+  alongside a live server.
+- Note: a capture stream whose `-H` target is a *sink* gets the default
+  source instead (PipeWire needs `stream.capture.sink=true` for monitors);
+  target an Audio/Source node.
+
 ## What is new in v1 (this session)
 
 - **Full duplex**: a second `pw_stream` with `PW_DIRECTION_INPUT` is
@@ -297,7 +328,9 @@ s.options.outDevice = "Studio";       // keep names matching to avoid the warnin
 ### Channel counts
 
 `-i N` and `-o M` are respected. `-i 0` skips creating the input stream
-entirely (no capture port will appear in pw-link). Default is 8/8.
+entirely (no capture port will appear in pw-link). `-o 0` skips the
+playback stream and lets capture drive the engine; `-i 0 -o 0` runs on an
+unlinked 1-port clock node. Default is 8/8.
 
 ## Real in-process sweep results (added in follow-up session)
 

@@ -198,8 +198,27 @@ private:
     std::string mOutTarget;
     std::string mInTarget;
 
+    // Which stream's process callback advances the engine (DSP + OSC
+    // scheduling). Normally the playback stream. With zero outputs the
+    // capture stream drives instead, reading its buffer directly (no ring).
+    // With zero outputs AND zero inputs there is nothing to drive from, so we
+    // create a hidden, never-autoconnected 1-channel playback stream that only
+    // serves as a clock (the always-process flag keeps it on PipeWire's
+    // Dummy-Driver) and writes silence.
+    enum class Drive { Output, Input, ClockOnly };
+    Drive mDrive = Drive::Output;
+
     bool createOutputStream(int numChannels);
     bool createInputStream(int numChannels);
+    // Shared setup handshake, called by whichever stream drives. Returns true
+    // once setup is complete (caller may then run the engine).
+    bool setupHandshake(uint32_t nFrames);
+    // One engine cycle: DSP over nFrames, writing interleaved output to `out`
+    // (stride mWorld->mNumOutputs; may be null when there are no outputs).
+    // `directIn` (stride mWorld->mNumInputs) is used for input when the capture
+    // stream is the driver; otherwise input comes from the capture ring.
+    // Returns false if the cycle was skipped (caller must zero its buffer).
+    bool runEngine(uint32_t nFrames, float* out, const float* directIn);
     // (Re)connect an existing stream with our standard format/flags. Factored
     // out of stream creation so reconnectStream can reuse it. Returns false if
     // pw_stream_connect itself fails.
@@ -346,8 +365,13 @@ bool SC_PipeWireDriver::createOutputStream(int numChannels) {
                                              PW_KEY_NODE_DESCRIPTION, nodeName.c_str(),
                                              PW_KEY_NODE_ALWAYS_PROCESS, "true",
                                              nullptr);
-    if (!mOutTarget.empty())
+    if (!mOutTarget.empty() && mDrive != Drive::ClockOnly)
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, mOutTarget.c_str());
+    if (mDrive == Drive::ClockOnly) {
+        // Pure clock node: never link it anywhere.
+        pw_properties_set(props, PW_KEY_NODE_AUTOCONNECT, "false");
+        pw_properties_set(props, PW_KEY_NODE_DONT_RECONNECT, "true");
+    }
     // The stream's sample rate is communicated via info.rate (below).
     // PW_KEY_NODE_FORCE_RATE is for forcing the *graph* rate, not just
     // declaring the node's format rate. On systems where the requested
@@ -394,11 +418,10 @@ bool SC_PipeWireDriver::connectStream(struct pw_stream* stream, enum pw_directio
     const struct spa_pod* params[1];
     params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
 
-    return pw_stream_connect(stream, dir, PW_ID_ANY,
-                             (enum pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS
-                                                    | PW_STREAM_FLAG_RT_PROCESS),
-                             params, 1)
-        >= 0;
+    const bool autoconnect = !(dir == PW_DIRECTION_OUTPUT && mDrive == Drive::ClockOnly);
+    const int flags = (autoconnect ? PW_STREAM_FLAG_AUTOCONNECT : 0) | PW_STREAM_FLAG_MAP_BUFFERS
+        | PW_STREAM_FLAG_RT_PROCESS;
+    return pw_stream_connect(stream, dir, PW_ID_ANY, (enum pw_stream_flags)flags, params, 1) >= 0;
 }
 
 bool SC_PipeWireDriver::createInputStream(int numChannels) {
@@ -440,10 +463,12 @@ bool SC_PipeWireDriver::DriverSetup(int* outNumSamples, double* outSampleRate) {
 
     const int numOutputs = static_cast<int>(mWorld->mNumOutputs);
     const int numInputs = static_cast<int>(mWorld->mNumInputs);
-    if (numOutputs <= 0) {
-        scprintf("%s: no output channels requested\n", kPwDriverIdent);
-        return false;
-    }
+    if (numOutputs > 0)
+        mDrive = Drive::Output;
+    else if (numInputs > 0)
+        mDrive = Drive::Input;
+    else
+        mDrive = Drive::ClockOnly;
 
     // inDevice -> capture source, outDevice -> playback sink. The client name
     // is the bare/prefix part of either field; prefer inDevice, fall back to
@@ -490,10 +515,17 @@ bool SC_PipeWireDriver::DriverSetup(int* outNumSamples, double* outSampleRate) {
     }
     pw_core_add_listener(mCore, &mCoreListener, &kCoreEvents, this);
 
-    if (!createOutputStream(numOutputs)) {
+    if (mDrive == Drive::Input) {
+        // No playback stream at all; the capture stream drives the engine.
+        // Its negotiated format stands in for the output format.
+        scprintf("%s: no output channels; capture stream drives the engine\n", kPwDriverIdent);
+    } else if (!createOutputStream(mDrive == Drive::ClockOnly ? 1 : numOutputs)) {
         scprintf("%s: failed to create output stream\n", kPwDriverIdent);
         pw_thread_loop_unlock(mLoop);
         return false;
+    } else if (mDrive == Drive::ClockOnly) {
+        scprintf("%s: no input or output channels; running on an unlinked clock-only node\n",
+                 kPwDriverIdent);
     }
 
     if (numInputs > 0) {
@@ -507,6 +539,8 @@ bool SC_PipeWireDriver::DriverSetup(int* outNumSamples, double* outSampleRate) {
         // only waits on the output side.
         mInFormatKnown = true;
     }
+    if (mDrive == Drive::Input)
+        mOutFormatKnown = true; // no playback stream to wait for
 
     pw_thread_loop_unlock(mLoop);
 
@@ -526,7 +560,7 @@ bool SC_PipeWireDriver::DriverSetup(int* outNumSamples, double* outSampleRate) {
     }
 
     scprintf("%s: negotiated %d samples @ %.1f Hz, %d out / %d in channel(s)\n", kPwDriverIdent,
-             mNegotiatedBufSize, mNegotiatedRate, mNegotiatedOutChannels, numInputs);
+             mNegotiatedBufSize, mNegotiatedRate, numOutputs, numInputs);
     // After the setup handshake waits for steady-state (see RunOutput),
     // any rate with a clean integer ratio to the graph rate yields a
     // bufLength-aligned quantum (e.g. 24k/96k/192k against a 48k graph
@@ -555,7 +589,7 @@ bool SC_PipeWireDriver::DriverSetup(int* outNumSamples, double* outSampleRate) {
     if (mMaxOutputLatency > 0.0)
         scprintf("%s: reported output latency %.2f ms\n", kPwDriverIdent, mMaxOutputLatency * 1e3);
 
-    if (numInputs > 0) {
+    if (numInputs > 0 && mDrive == Drive::Output) {
         mCaptureChannels = numInputs;
         // Allocate the capture ring once, here on the main thread. Sized
         // for kCapRingFrames frames per channel (>= 4 * max quantum), so
@@ -574,7 +608,7 @@ bool SC_PipeWireDriver::DriverSetup(int* outNumSamples, double* outSampleRate) {
 }
 
 bool SC_PipeWireDriver::DriverStart() {
-    if (!mOutStream)
+    if (!mOutStream && !mInStream)
         return false;
     mDLL.Reset(mSampleRate, mNumSamplesPerCallback, SC_TIME_DLL_BW, pwOscTimeSeconds());
     mStreaming.store(true);
@@ -769,38 +803,72 @@ bool SC_PipeWireDriver::handleQuantumChange(uint32_t newFrames) {
 }
 
 // =====================================================================
-// RunInput: capture stream process callback (ring producer)
-// Push the captured frames into the lock-free ring. Runs on a different RT
-// thread than RunOutput, so it only ever writes the ring storage and the
-// mCapWrite counter; it never touches mCapRead.
+// Setup handshake (shared by whichever stream drives the engine)
+//
+// Capture the *steady-state* quantum, not the first callback's value. After a
+// stream rate change PipeWire's resampler emits a transient on cb#0 (e.g. 2081
+// at -S 192000) before settling on its actual cycle size (2048 in that
+// example). Wait until nFrames stays the same for two callbacks in a row, then
+// lock it in and signal DriverSetup. Until then the caller outputs silence.
+
+bool SC_PipeWireDriver::setupHandshake(uint32_t nFrames) {
+    if (mSetupReady)
+        return true;
+    if (nFrames > 0 && mNegotiatedBufSize == 0) {
+        if (mSetupPrevFrames == nFrames) {
+            mNegotiatedBufSize = int(nFrames);
+            mCurrentQuantum = nFrames;
+        } else {
+            mSetupPrevFrames = nFrames;
+        }
+    }
+    signalSetup();
+    return false;
+}
+
+// =====================================================================
+// RunInput: capture stream process callback
+// Normally the ring producer: push the captured frames into the lock-free
+// ring. Runs on a different RT thread than RunOutput, so in that mode it only
+// ever writes the ring storage and the mCapWrite counter; it never touches
+// mCapRead. With zero outputs (Drive::Input) it is the engine driver instead
+// and hands its buffer straight to runEngine.
 
 void SC_PipeWireDriver::RunInput() {
     if (!mInStream)
         return;
+    const bool driving = (mDrive == Drive::Input);
+    if (driving)
+        sc_SetDenormalFlags();
+
     struct pw_buffer* pwBuf = pw_stream_dequeue_buffer(mInStream);
     if (!pwBuf)
         return;
     struct spa_buffer* sbuf = pwBuf->buffer;
-    if (sbuf->n_datas == 0 || !sbuf->datas[0].data) {
+
+    const int channels = mInChannels; // channels on the stream
+    const float* interleaved = nullptr;
+    uint32_t nFrames = 0;
+    if (sbuf->n_datas > 0 && sbuf->datas[0].data && channels > 0) {
+        const uint32_t stride = sizeof(float) * uint32_t(channels);
+        const struct spa_chunk* chunk = sbuf->datas[0].chunk;
+        const uint32_t offset = chunk ? chunk->offset : 0;
+        const uint32_t size = chunk ? chunk->size : 0;
+        if (offset < sbuf->datas[0].maxsize) {
+            nFrames = sc_min(size, sbuf->datas[0].maxsize - offset) / stride;
+            interleaved =
+                reinterpret_cast<const float*>(static_cast<const uint8_t*>(sbuf->datas[0].data) + offset);
+        }
+    }
+
+    if (driving) {
+        if (setupHandshake(nFrames) && interleaved && nFrames > 0)
+            runEngine(nFrames, nullptr, interleaved);
         pw_stream_queue_buffer(mInStream, pwBuf);
         return;
     }
 
-    const int channels = mCaptureChannels;
-    if (channels <= 0 || mCapRing.empty()) {
-        pw_stream_queue_buffer(mInStream, pwBuf);
-        return;
-    }
-    const uint32_t stride = sizeof(float) * uint32_t(channels);
-    const struct spa_chunk* chunk = sbuf->datas[0].chunk;
-    const uint32_t offset = chunk ? chunk->offset : 0;
-    const uint32_t size = chunk ? chunk->size : 0;
-    const uint32_t nFrames = size / stride;
-
-    const float* interleaved = reinterpret_cast<const float*>(
-        static_cast<const uint8_t*>(sbuf->datas[0].data) + offset);
-
-    if (nFrames > 0) {
+    if (interleaved && nFrames > 0 && mCaptureChannels == channels && !mCapRing.empty()) {
         const uint32_t w = mCapWrite.load(std::memory_order_relaxed);
         float* ring = mCapRing.data();
         for (uint32_t n = 0; n < nFrames; ++n) {
@@ -817,7 +885,9 @@ void SC_PipeWireDriver::RunInput() {
 }
 
 // =====================================================================
-// RunOutput: playback stream process callback — drives the DSP loop
+// RunOutput: playback stream process callback. Drives the engine unless
+// there are no outputs; in clock-only mode it drives the engine and writes
+// silence to its single, unlinked channel.
 
 void SC_PipeWireDriver::RunOutput() {
     sc_SetDenormalFlags();
@@ -827,8 +897,8 @@ void SC_PipeWireDriver::RunOutput() {
         return;
     struct spa_buffer* sbuf = pwBuf->buffer;
     float* interleaved = (sbuf->n_datas > 0) ? static_cast<float*>(sbuf->datas[0].data) : nullptr;
-    const int numChannels = static_cast<int>(mWorld->mNumOutputs);
-    const uint32_t stride = sizeof(float) * uint32_t(numChannels);
+    const int streamChannels = mOutChannels; // == mNumOutputs, or 1 in clock-only mode
+    const uint32_t stride = sizeof(float) * uint32_t(streamChannels > 0 ? streamChannels : 1);
     uint32_t nFrames = 0;
     if (interleaved) {
         nFrames = sbuf->datas[0].maxsize / stride;
@@ -836,43 +906,32 @@ void SC_PipeWireDriver::RunOutput() {
             nFrames = pwBuf->requested;
     }
 
-    auto zeroAndQueue = [&]() {
-        if (interleaved && nFrames > 0)
-            std::memset(interleaved, 0, nFrames * stride);
-        if (interleaved && nFrames > 0 && sbuf->datas[0].chunk) {
-            sbuf->datas[0].chunk->offset = 0;
-            sbuf->datas[0].chunk->stride = int32_t(stride);
-            sbuf->datas[0].chunk->size = nFrames * stride;
-        }
-        pw_stream_queue_buffer(mOutStream, pwBuf);
-    };
-
-    // Setup handshake: capture the *steady-state* quantum, not the first
-    // callback's value. After a stream rate change PipeWire's resampler
-    // emits a transient on cb#0 (e.g. 2081 at -S 192000) before settling
-    // on its actual cycle size (2048 in that example). Wait until we see
-    // nFrames stay the same for two callbacks in a row, then lock it in
-    // and signal DriverSetup. Until then, keep outputting silence.
-    if (!mSetupReady) {
-        if (interleaved && nFrames > 0 && mNegotiatedBufSize == 0) {
-            if (mSetupPrevFrames == nFrames) {
-                mNegotiatedBufSize = int(nFrames);
-                mCurrentQuantum = nFrames;
-            } else {
-                mSetupPrevFrames = nFrames;
-            }
-        }
-        signalSetup();
-        zeroAndQueue();
-        return;
+    bool wrote = false;
+    if (interleaved && nFrames > 0 && setupHandshake(nFrames)) {
+        if (mDrive == Drive::Output)
+            wrote = runEngine(nFrames, interleaved, nullptr);
+        else
+            runEngine(nFrames, nullptr, nullptr); // clock-only: DSP runs, we emit silence
     }
+    if (!wrote && interleaved && nFrames > 0)
+        std::memset(interleaved, 0, size_t(nFrames) * stride);
 
+    if (interleaved && nFrames > 0 && sbuf->datas[0].chunk) {
+        sbuf->datas[0].chunk->offset = 0;
+        sbuf->datas[0].chunk->stride = int32_t(stride);
+        sbuf->datas[0].chunk->size = nFrames * stride;
+    }
+    pw_stream_queue_buffer(mOutStream, pwBuf);
+}
+
+// =====================================================================
+// runEngine: one engine cycle (OSC, scheduler, World_Run per sub-block)
+
+bool SC_PipeWireDriver::runEngine(uint32_t nFrames, float* out, const float* directIn) {
     // Before DriverStart flips mStreaming, the World isn't yet hooked up
     // for DSP — silence.
-    if (!mStreaming.load()) {
-        zeroAndQueue();
-        return;
-    }
+    if (!mStreaming.load())
+        return false;
 
     // Quantum-change handling. PipeWire is allowed to renegotiate the
     // graph quantum at any time (most commonly right after startup while
@@ -880,7 +939,7 @@ void SC_PipeWireDriver::RunOutput() {
     // another client joins with a stricter latency request). Adapt the
     // driver bookkeeping in place; only drop the buffer if the new
     // quantum is unworkable (e.g. not divisible by world->mBufLength).
-    if (nFrames != mCurrentQuantum && nFrames > 0) {
+    if (nFrames != mCurrentQuantum) {
         const uint32_t oldQuantum = mCurrentQuantum;
         if (handleQuantumChange(nFrames)) {
             scprintf("%s: quantum changed %u -> %u (adapted)\n", kPwDriverIdent, oldQuantum, nFrames);
@@ -894,32 +953,30 @@ void SC_PipeWireDriver::RunOutput() {
             } else {
                 --mDropoutReportCounter;
             }
-            zeroAndQueue();
             mAudioSync.Signal();
-            return;
+            return false;
         }
+    }
+
+    World* world = mWorld;
+    const int numOutputs = int(world->mNumOutputs);
+    const int numInputs = int(world->mNumInputs);
+    const int numSamples = int(nFrames);
+    const int bufFrames = world->mBufLength;
+    if (bufFrames <= 0 || numSamples <= 0 || numSamples % bufFrames != 0) {
+        mAudioSync.Signal();
+        return false;
     }
 
     const uint64_t rtT0 = monotonic_ns();
 
     mDLL.Update(pwOscTimeSeconds());
 
-    World* world = mWorld;
-
     try {
         mFromEngine.Free();
         mToEngine.Perform();
         mOscPacketsToEngine.Perform();
 
-        const int numOutputs = numChannels;
-        const int numInputs = int(world->mNumInputs);
-        const int numSamples = int(nFrames);
-        const int bufFrames = world->mBufLength;
-        if (bufFrames <= 0 || numSamples <= 0 || numSamples % bufFrames != 0) {
-            zeroAndQueue();
-            mAudioSync.Signal();
-            return;
-        }
         const int numBufs = numSamples / bufFrames;
 
         float* outBuses = world->mAudioBus;
@@ -927,16 +984,20 @@ void SC_PipeWireDriver::RunOutput() {
         int32* outTouched = world->mAudioBusTouched;
         int32* inTouched = world->mAudioBusTouched + world->mNumOutputs;
 
-        // Capture handoff (ring consumer). The capture stream runs on a
-        // separate RT thread; pull this cycle's input frames from the
-        // lock-free ring, keeping a small latency cushion (~2 quanta) so
-        // phase jitter between the two streams doesn't cause spurious
-        // underruns. capRBase is the ring frame index for the first frame
-        // of this callback; the per-sub-block loop below deinterleaves out
-        // of the ring at capRBase + bufFramePos.
+        // Input source for this cycle. Either the capture buffer handed to us
+        // directly (capture stream is the driver), or the capture ring: the
+        // capture stream runs on a separate RT thread, so pull this cycle's
+        // frames from the lock-free ring, keeping a small latency cushion
+        // (~2 quanta) so phase jitter between the two streams doesn't cause
+        // spurious underruns. capRBase is the ring frame index for the first
+        // frame of this callback.
+        const int directStride = mInChannels;
+        const int directCh = sc_min(numInputs, directStride);
         uint32_t capRBase = 0;
         bool haveCapture = false;
-        if (numInputs > 0 && mCaptureChannels >= numInputs) {
+        if (directIn) {
+            haveCapture = directCh > 0;
+        } else if (numInputs > 0 && mCaptureChannels >= numInputs) {
             const uint32_t w = mCapWrite.load(std::memory_order_acquire);
             uint32_t r = mCapRead.load(std::memory_order_relaxed);
             const uint32_t avail = w - r; // wrap-safe
@@ -963,10 +1024,22 @@ void SC_PipeWireDriver::RunOutput() {
         for (int i = 0; i < numBufs; ++i, world->mBufCounter++, bufFramePos += bufFrames) {
             int32 bufCounter = world->mBufCounter;
 
-            // Copy + touch inputs (if any). The ring is interleaved, so
-            // deinterleave each channel into its scsynth input bus.
+            // Copy + touch inputs (if any), deinterleaving into the
+            // scsynth input buses.
             if (numInputs > 0) {
-                if (haveCapture) {
+                if (haveCapture && directIn) {
+                    const float* src = directIn + size_t(bufFramePos) * size_t(directStride);
+                    for (int k = 0; k < numInputs; ++k) {
+                        float* dst = inBuses + k * bufFrames;
+                        if (k < directCh) {
+                            for (int n = 0; n < bufFrames; ++n)
+                                dst[n] = src[size_t(n) * size_t(directStride) + k];
+                        } else {
+                            std::memset(dst, 0, sizeof(float) * size_t(bufFrames));
+                        }
+                        inTouched[k] = bufCounter;
+                    }
+                } else if (haveCapture) {
                     const float* ring = mCapRing.data();
                     const int capCh = mCaptureChannels;
                     for (int k = 0; k < numInputs; ++k) {
@@ -1007,16 +1080,18 @@ void SC_PipeWireDriver::RunOutput() {
             world->mSubsampleOffset = 0.f;
             World_Run(world);
 
-            // Interleave outputs into pipewire buffer (planar → interleaved).
-            for (int k = 0; k < numOutputs; ++k) {
-                float* src = outBuses + k * bufFrames;
-                float* dstBase = interleaved + bufFramePos * numChannels + k;
-                if (outTouched[k] == bufCounter) {
-                    for (int n = 0; n < bufFrames; ++n)
-                        dstBase[n * numChannels] = src[n];
-                } else {
-                    for (int n = 0; n < bufFrames; ++n)
-                        dstBase[n * numChannels] = 0.0f;
+            // Interleave outputs into the pipewire buffer (planar -> interleaved).
+            if (out) {
+                for (int k = 0; k < numOutputs; ++k) {
+                    float* src = outBuses + k * bufFrames;
+                    float* dstBase = out + bufFramePos * numOutputs + k;
+                    if (outTouched[k] == bufCounter) {
+                        for (int n = 0; n < bufFrames; ++n)
+                            dstBase[n * numOutputs] = src[n];
+                    } else {
+                        for (int n = 0; n < bufFrames; ++n)
+                            dstBase[n * numOutputs] = 0.0f;
+                    }
                 }
             }
 
@@ -1028,15 +1103,7 @@ void SC_PipeWireDriver::RunOutput() {
         scprintf("%s: unknown exception in real time\n", kPwDriverIdent);
     }
 
-    if (sbuf->datas[0].chunk) {
-        sbuf->datas[0].chunk->offset = 0;
-        sbuf->datas[0].chunk->stride = int32_t(stride);
-        sbuf->datas[0].chunk->size = nFrames * stride;
-    }
-    pw_stream_queue_buffer(mOutStream, pwBuf);
-
-    // CPU load + xrun detection (same as the local patch in SC_Jack.cpp,
-    // kept in sync so the scsynth_sweep harness compares like-for-like).
+    // CPU load + xrun detection from per-callback wall time.
     const uint64_t rtT1 = monotonic_ns();
     const double busyNs = double(rtT1 - rtT0);
     const double cpuUsage = mPeriodNs > 0.0 ? 100.0 * (busyNs / mPeriodNs) : 0.0;
@@ -1056,4 +1123,5 @@ void SC_PipeWireDriver::RunOutput() {
     }
 
     mAudioSync.Signal();
+    return true;
 }
